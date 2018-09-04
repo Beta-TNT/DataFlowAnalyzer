@@ -66,8 +66,6 @@ class AnalyseBase(object):
         _ExtraData = None  # 附加数据
         _Valid = True  # 指示当前Flag是否应还有效，当生存期消耗完毕或者超过有效时间时为False，其他情况包括门槛未消耗完毕时仍然为True。
         # 检查缓存对象是否可用应使用Check()函数，而不是直接使用_Valid属性
-        _Expire = 0  # 当前缓存对象在创建后的生存时间，单位是秒，可以是小数，比如1.5秒
-        _ExpireTimmer = None
 
         @property
         def ExtraData(self):
@@ -89,24 +87,11 @@ class AnalyseBase(object):
         def Valid(self):
             return self._Valid
 
-        @property
-        def Expire(self):
-            return self._Expire
-
-        def __init__(self, FlagContent, Threhold, LifeTime, ExtraData, Expire=0):
+        def __init__(self, FlagContent, Threhold, LifeTime, ExtraData):
             self._Threhold = Threhold
             self._LifeTime = LifeTime
             self._FlagContent = FlagContent
             self._ExtraData = ExtraData
-            self._Expire = Expire
-            if type(Expire) in {int, float} and Expire > 0:
-                # 如果到期时间大于0，则为有效值，为缓存对象设置有效期，并且即刻生效。
-                self._ExpireTimmer = threading.Timer(Expire, self.__TimeOut)
-                self._ExpireTimmer.start()
-
-        def __TimeOut(self):
-            '缓存对象到期，将被标记为失效'
-            self._Valid = False
 
         def _ConsumeThrehold(self):
             '消耗门槛操作，如果门槛已经消耗完毕，返回True。在门槛消耗完毕之前，Valid属性仍然是True'
@@ -152,6 +137,10 @@ class AnalyseBase(object):
             raise TypeError('Invalid InputRules type, expecting list')
         self._rules = InputRules    # 规则列表
         self._cache = dict()        # 缓存
+
+    def __TimeOut(self, InputFlag):
+        if InputFlag in self._cache:
+            self._cache.pop(InputFlag)
 
     def _DefaultFlagCheck(self, InputFlag):
         '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
@@ -332,10 +321,14 @@ class AnalyseBase(object):
                             currentFlag,
                             rule["FlagThrehold"],
                             rule["FlagLifetime"],
-                            newDataItem,
-                            rule.get('Expire', 0))
+                            newDataItem)
                         # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be returned.
                         self._cache[currentFlag] = newCacheItem
+                        
+                        Expire = rule.get('Expire', 0)
+                        if type(Expire) in {int, float} and Expire > 0:
+                        # 如果到期时间大于0，则为有效值，为缓存对象设置有效期，并且即刻生效。
+                            threading.Timer(Expire, self.__TimeOut, {currentFlag}).start()
                         rtn.add(newCacheItem)
                 else:
                     # Flag冲突时，数据将被忽略
