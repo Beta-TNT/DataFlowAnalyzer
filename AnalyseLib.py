@@ -3,6 +3,7 @@
 __author__ = 'Beta-TNT'
 
 import re
+import threading
 from enum import IntEnum
 
 
@@ -63,7 +64,10 @@ class AnalyseBase(object):
         _LifeTime = 0  # 生存期剩余
         _FlagContent = ''  # Flag内容
         _ExtraData = None  # 附加数据
-        _Valid = True  # 指示当前Flag是否应还有效，当生存期消耗完毕时_Valid = False
+        _Valid = True  # 指示当前Flag是否应还有效，当生存期消耗完毕或者超过有效时间时为False，其他情况包括门槛未消耗完毕时仍然为True。
+        # 检查缓存对象是否可用应使用Check()函数，而不是直接使用_Valid属性
+        _Expire = 0  # 当前缓存对象在创建后的生存时间，单位是秒，可以是小数，比如1.5秒
+        _ExpireTimmer = None
 
         @property
         def ExtraData(self):
@@ -85,13 +89,27 @@ class AnalyseBase(object):
         def Valid(self):
             return self._Valid
 
-        def __init__(self, FlagContent, Threhold, LifeTime, ExtraData):
+        @property
+        def Expire(self):
+            return self._Expire
+
+        def __init__(self, FlagContent, Threhold, LifeTime, ExtraData, Expire=0):
             self._Threhold = Threhold
             self._LifeTime = LifeTime
             self._FlagContent = FlagContent
             self._ExtraData = ExtraData
+            self._Expire = Expire
+            if type(Expire) in {int, float} and Expire > 0:
+                # 如果到期时间大于0，则为有效值，为缓存对象设置有效期，并且即刻生效。
+                self._ExpireTimmer = threading.Timer(Expire, self.__TimeOut)
+                self._ExpireTimmer.start()
 
-        def _ConsumeThrehold(self):  # 消耗门槛操作，如果门槛已经消耗完毕，返回True
+        def __TimeOut(self):
+            '缓存对象到期，将被标记为失效'
+            self._Valid = False
+
+        def _ConsumeThrehold(self):
+            '消耗门槛操作，如果门槛已经消耗完毕，返回True。在门槛消耗完毕之前，Valid属性仍然是True'
             if self._Valid == False:
                 return False
 
@@ -101,8 +119,8 @@ class AnalyseBase(object):
                 self._Threhold -= 1
                 return False
 
-        # 消耗生存期操作。如果还在生存期内或者生存期无限（值为0）返回True，否则返回false并将_Valid设为False
         def _ConsumeLifetime(self):
+            '消耗生存期操作。如果还在生存期内或者生存期无限（值为0）返回True，否则返回false并将Valid属性设为False'
             if self._Valid == False:
                 return False
 
@@ -138,14 +156,12 @@ class AnalyseBase(object):
     def _DefaultFlagCheck(self, InputFlag):
         '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
         rtn = False
-        hitItem = None
-        if InputFlag in self._cache:  # Flag存在
-            hitItem = self._cache[InputFlag]
+        hitItem = self._cache.get(InputFlag, None)
+        if hitItem != None:  # Flag存在
             rtn = hitItem.Check()  # 检查Flag，命中返回True
-            if hitItem.Valid == False:  # 删除过期Flag
+            if hitItem.Valid == False:  # 删除过期/无效的Flag（CacheItem）
                 self._cache.pop(InputFlag)
-            if not rtn:
-                hitItem = None
+            hitItem = None if rtn == False else hitItem
         return rtn, hitItem
 
     def _DefaultFieldCheck(self, TargetData, InputFieldCheckRule):
@@ -280,14 +296,13 @@ class AnalyseBase(object):
         '''分析算法主函数。根据已经加载的规则和输入数据。
         基础分析算法判断是否匹配分为字段匹配和Flag匹配两部分，只有都匹配成功才算该条数据匹配成功。
         ActionFunc传入一个函数，该函数需要接收命中规则的数据inputData（dict）、对应命中的规则rule（dict）、命中的缓存对象hitItem(Obj)，生成的CurrentFlag（obj）作为参数,
-        在匹配成功后运行，返回值将作为CacheItem的ExtraData存储进缓存。
         如果输入数据匹配成功，数据调用传入的ActionFunction()作为输出接口。每成功匹配一条规则，传入的ActionFunc()将被执行一次
-        如果数据数据匹配成功且命中了已存在的缓存对象，则返回该缓存对象。否则返回None
+        返回值是set()类型，包含了该条数据命中的所有CacheItem。如果没有命中返回长度为0的空集合（不是None）
         由于提供了单条规则匹配的方法，用户也可参考本函数自行实现分析函数
 
         Main function. Analyzing key-value based data (dict) with given rule set.
         Each time the input data hits a rule, ActionFunc() will be called once, use this as an output interface.
-        If the input data hits a rule and successfully generated a cached item, this CacheItem object will be returned, otherwise return None.
+        Return a set() which includes all the CacheItem that input data hits, return an empty set() if input data hits nothing (not None).
         '''
         if InputRules == None:
             return None
@@ -295,11 +310,12 @@ class AnalyseBase(object):
         if type(InputData) != dict:
             raise TypeError("Invalid InputData type, expecting dict()")
 
+        rtn = set()  # 该条数据命中的缓存对象集合
+
         for rule in InputRules:  # 规则遍历主循环
             # 遍历检查单条规则
             # Tests every single rule on input data
             ruleCheckResult, hitItem = self.SingleRuleTest(InputData, rule)
-
             if ruleCheckResult:  # 字段匹配和前序Flag匹配均命中（包括前序Flag为空的情况），规则命中
                 # 1、构造本级Flag；   Generate current flag;
                 # 2、调用ActionFunc()获得用户数据，构造CacheItem对象；  Call ActionFunc() to get a user defined data
@@ -313,11 +329,16 @@ class AnalyseBase(object):
                     # Passing the key data, hit rule itself, hit cache item (None if the data hits a init rule) and flag to ActionFunc()
                     if newDataItem != None:  # 用户层还可以再做一次判断，如果用户认为已经满足字段匹配和前序FLAG匹配的数据仍不符合分析条件，可返回None，缓存数据将不会被记录
                         newCacheItem = self.CacheItem(
-                            currentFlag, rule["FlagThrehold"], rule["FlagLifetime"], newDataItem)
+                            currentFlag,
+                            rule["FlagThrehold"],
+                            rule["FlagLifetime"],
+                            newDataItem,
+                            rule.get('Expire', 0))
                         # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be returned.
                         self._cache[currentFlag] = newCacheItem
-                    return newCacheItem
+                        rtn.add(newCacheItem)
                 else:
                     # Flag冲突时，数据将被忽略
                     # Data will be abandoned if flag conflics
-                    return None
+                    pass
+        return rtn
