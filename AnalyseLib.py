@@ -130,7 +130,8 @@ class AnalyseBase(object):
                     return False
 
     _rules = None  # 规则列表
-    _cache = dict()  # 缓存
+    _cache = dict() # Flag-缓存对象字典
+    _timer = dict() # Flag-计时器对象字典
 
     def __init__(self, InputRules):
         if type(InputRules) != list:
@@ -138,9 +139,11 @@ class AnalyseBase(object):
         self._rules = InputRules    # 规则列表
         self._cache = dict()        # 缓存
 
-    def __TimeOut(self, InputFlag):
+    def __RemoveFlag(self, InputFlag):
         if InputFlag in self._cache:
             self._cache.pop(InputFlag)
+        if InputFlag in self._timer:
+            self._timer.pop(InputFlag)
 
     def _DefaultFlagCheck(self, InputFlag):
         '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
@@ -322,16 +325,25 @@ class AnalyseBase(object):
                             rule["FlagThrehold"],
                             rule["FlagLifetime"],
                             newDataItem)
-                        # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be returned.
+                        # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be in the return.
                         self._cache[currentFlag] = newCacheItem
+                        rtn.add(newCacheItem)
                         
                         Expire = rule.get('Expire', 0)
                         if type(Expire) in {int, float} and Expire > 0:
-                        # 如果到期时间大于0，则为有效值，为缓存对象设置有效期，并且即刻生效。
-                            threading.Timer(Expire, self.__TimeOut, {currentFlag}).start()
-                        rtn.add(newCacheItem)
+                        # 如果到期时间大于0，则为有效值，为FLAG设置有效期，并且即刻生效。
+                            timer = threading.Timer(Expire, self.__RemoveFlag, {currentFlag})
+                            self._timer[currentFlag] = timer
+                            timer.start()
                 else:
-                    # Flag冲突时，数据将被忽略
-                    # Data will be abandoned if flag conflics
+                    # Flag冲突时，检查FLAG是否对应一个定时器，命中规则是否带有超时规则。如果都具备，用当前规则的超时重置这个计数器
+                    # if the new flag conflicts with a timed flag, check and reset the flag's timer with the Expire given in the rule.
+                    hitTimer = self._timer.get(currentFlag, None)
+                    Expire = rule.get('Expire', 0)
+                    if hitTimer != None and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
+                        hitTimer.cancel()
+                        resetTimer = threading.Timer(Expire, self.__RemoveFlag, {currentFlag})
+                        self._timer[currentFlag] = resetTimer
+                        resetTimer.start()
                     pass
         return rtn
