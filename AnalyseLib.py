@@ -266,6 +266,15 @@ class AnalyseBase(object):
             # Prevflag is '' or None, it means this is a init rule. Return (True, None)
             return (True, None)
 
+    def _DefaultClearCache(self):
+        '默认的清除缓存函数，将_cache和_timer两个字典清空'
+        self._cache.clear()
+        self._timer.clear()
+
+    def FieldCheck(self, TargetData, InputFieldCheckRule):
+        '字段检查函数，可根据需要在派生类里重写。'
+        return self._DefaultFieldCheck(TargetData, InputFieldCheckRule)
+
     def FlagCheck(self, InputFlag):
         'Flag检查函数，可根据需要在派生类里重写。应返回一个二元Tuple，分别是Flag是否有效，以及有效的Flag命中的对象。没有命中返回(False, None)'
         return self._DefaultFlagCheck(InputFlag)
@@ -280,9 +289,9 @@ class AnalyseBase(object):
         'Single rule test func, you may overwrite it in child class if necessary.'
         return self._DefaultSingleRuleTest(InputData, InputRule)
 
-    def FieldCheck(self, TargetData, InputFieldCheckRule):
-        '字段检查函数，可根据需要在派生类里重写。'
-        return self._DefaultFieldCheck(TargetData, InputFieldCheckRule)
+    def ClearCache(self):
+        '清除缓存方法，重置缓存状态。可根据需要在派生类里重写'
+        self._DefaultClearCache()
 
     def AnalyseMain(self, InputData, ActionFunc, InputRules=_rules):
         '''分析算法主函数。根据已经加载的规则和输入数据。
@@ -337,7 +346,7 @@ class AnalyseBase(object):
                             timer.start()
                 else:
                     # Flag冲突时，检查FLAG是否对应一个定时器，命中规则是否带有超时规则。如果都具备，用当前规则的超时重置这个计数器
-                    # if the new flag conflicts with a timed flag, check and reset the flag's timer with the Expire given in the rule.
+                    # if the new flag conflicts with a existed and timed flag, check and reset the flag's timer with the Expire given in the rule.
                     hitTimer = self._timer.get(currentFlag, None)
                     Expire = rule.get('Expire', 0)
                     if hitTimer != None and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
