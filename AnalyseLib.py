@@ -156,7 +156,7 @@ class AnalyseBase(object):
         return rtn, hitItem
 
     def _DefaultFlagPeek(self, InputFlag):
-        '默认Flag偷窥函数，检查Flag是否有效。返回定义和默认Flag检查函数不同，但并不会触发Threhold或Lifetime消耗，也不进行缓存管理'
+        '默认Flag偷窥函数，检查Flag是否有效。返回定义和默认Flag检查函数相同，但并不会触发Threhold或Lifetime消耗，也不进行缓存管理'
         rtn = False
         hitItem = self._cache.get(InputFlag, None)
         if hitItem:
