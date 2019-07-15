@@ -38,6 +38,7 @@ class AnalyseBase(object):
     CurrentFlag ：时序分析算法本级规则命中后构造Flag的模板
     FlagThrehold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
     FlagLifetime：本级规则构造的Flag生存期。Flag被真正触发之后，相同的Flag再次触发会消耗1，消耗到0后Flag删除
+    Expire      ：当前规则触发生成的Flag的生存时间，单位是秒，浮点数。如该项不存或0，则表示生存时间为无限
     FieldCheckList[]    ：字段匹配项列表
 
     字段匹配项结构（字典）：
@@ -53,7 +54,7 @@ class AnalyseBase(object):
                     Flag生效之后（Threhold消耗完）每次命中Lifetime消耗1。
                     当最后一次命中之后Lifetime减0时这个Flag将被销毁。
                     Lifetime如果初始就是0，则为永久有效，跳过Lifetime判定和消耗流程。
-    ExtraData   ：  附加数据，和存储业务需要的任何数据。
+    ExtraData   ：  附加数据，可存储业务需要的任何数据。
     FlagContent ：  对应Flag的内容
     '''
 
@@ -121,7 +122,7 @@ class AnalyseBase(object):
             return self._DefaultCheck()
 
         def _DefaultCheck(self):  # 检查是否有效
-            if self._Valid == False:
+            if not self._Valid:
                 return False
             else:
                 if self._ConsumeThrehold():
@@ -144,24 +145,25 @@ class AnalyseBase(object):
         if InputFlag in self._timer:
             self._timer.pop(InputFlag)
 
-    def _DefaultFlagCheck(self, InputFlag):
-        '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
-        rtn = False
-        hitItem = self._cache.get(InputFlag, None)
-        if hitItem != None:  # Flag存在
-            rtn = hitItem.Check()  # 检查Flag，命中返回True
-            if hitItem.Valid == False:  # 删除过期/无效的Flag（CacheItem）
-                self._cache.pop(InputFlag)
-            hitItem = None if rtn == False else hitItem
-        return rtn, hitItem
-
     def _DefaultFlagPeek(self, InputFlag):
-        '默认Flag偷窥函数，检查Flag是否有效。返回定义和默认Flag检查函数相同，但并不会触发Threhold或Lifetime消耗，也不进行缓存管理'
+        '默认Flag偷窥函数，检查Flag是否有效。返回定义和默认Flag检查函数相同，但并不会触发Threhold或Lifetime消耗，也不进行缓存管理。对于Threhold不为0的Flag也返回缓存对象'
         rtn = False
         hitItem = self._cache.get(InputFlag, None)
         if hitItem:
-            rtn = hitItem.Valid and not bool(hitItem.ThreholdRemain)
-        return rtn, None if not rtn else hitItem
+            rtn = hitItem.Valid
+        return rtn, hitItem
+
+    def _DefaultFlagCheck(self, InputFlag):
+        '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
+        rtn, hitItem = self._DefaultFlagPeek(InputFlag)
+        if not rtn:
+            return False, None
+        else:
+            rtn = hitItem.Check()
+            if not hitItem.Valid:  # 删除过期/无效的Flag（CacheItem）
+                self._cache.pop(InputFlag)
+            hitItem = None if not rtn else hitItem
+            return rtn, hitItem
 
     def _DefaultFieldCheck(self, TargetData, InputFieldCheckRule):
         '默认的字段检查函数，输入字段的内容以及单条字段检查规则，返回True/False'
