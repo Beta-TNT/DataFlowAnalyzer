@@ -183,8 +183,7 @@ class AnalyseBase(object):
                 MatchContent = str(MatchContent)
             if type(TargetData) != str:
                 TargetData = str(TargetData)
-            fieldCheckResult = (TargetData.lower().find(
-                MatchContent.lower()) != -1)
+            fieldCheckResult = (TargetData.lower().find(MatchContent.lower()) != -1)
         elif InputFieldCheckRule["MatchCode"] in {MatchMode.RegexMatching, MatchMode.ReverseRegexMatching}:
             # 正则匹配（字符串） regex match
             if type(MatchContent) != str:
@@ -208,6 +207,8 @@ class AnalyseBase(object):
     @staticmethod
     def _DefaultFlagGenerator(InputData, InputTemplate, BytesDecoding='utf-16'):
         '默认的Flag生成函数，根据输入的数据和模板构造Flag。将模板里用大括号包起来的字段名替换为InputData对应字段的内容，如果包含bytes字段，需要指定解码方法'
+        #Default flag generator, replaces the placeholder substring like '{key}' with the value of InputData['key'].
+        #Bytes type will be encoded into str with given decoding.
         if InputTemplate == None:
             return None
 
@@ -215,21 +216,16 @@ class AnalyseBase(object):
             raise TypeError("Invalid Template type, expecting str")
         if type(InputData) != dict:
             raise TypeError("Invalid InputData type, expecting dict")
-
-        rtn = InputTemplate
+            
         for inputDataKey in InputData:
             inputDataItem = InputData[inputDataKey]
-            replacePattern = "{%s}" % inputDataKey
-            replacement = ""
             if type(inputDataItem) == bytes:
                 try:
-                    replacement = inputDataItem.decode(BytesDecoding)
+                    InputData[inputDataKey] = inputDataItem.decode(BytesDecoding)
                 except Exception:
-                    replacement = ""
-            else:
-                replacement = str(inputDataItem)
-            rtn = rtn.replace(replacePattern, replacement)
+                    InputData[inputDataKey] = ""
 
+        rtn = InputTemplate.format(**InputData)
         return rtn
 
     def _DefaultSingleRuleTest(self, InputData, InputRule):
@@ -237,17 +233,15 @@ class AnalyseBase(object):
         # Single rule test function. Returns a tuple like (True, HitCacheItem) if the the data hit the rule,
         # or (False, None) if the data hits nothing.
         if type(InputData) != dict or type(InputRule) != dict:
-            raise TypeError(
-                "Invalid InputData or InputRule type, expecting dict")
+            raise TypeError("Invalid InputData or InputRule type, expecting dict")
 
         fieldCheckResult = False
-        if type(InputRule["FieldCheckList"]) == dict:
+        if type(InputRule["FieldCheckList"]) in (dict, list):
             # 字段检查遍历循环，用字段检查规则轮数据
             for fieldChecker in InputRule["FieldCheckList"]:
                 if fieldChecker.get("FieldName") in InputData:
                     targetData = InputData.get(fieldChecker["FieldName"])
-                    fieldCheckResult = self.FieldCheck(
-                        targetData, fieldChecker)
+                    fieldCheckResult = self.FieldCheck(targetData, fieldChecker)
 
                 if InputRule["Operator"] in {OperatorCode.OpOr, OperatorCode.OpNotOr} and fieldCheckResult or \
                         InputRule["Operator"] in {OperatorCode.OpAnd, OperatorCode.OpNotAnd} and not fieldCheckResult:
@@ -360,7 +354,7 @@ class AnalyseBase(object):
                             timer.start()
                 else:
                     # Flag冲突时，检查FLAG是否对应一个定时器，命中规则是否带有超时规则。如果都具备，用当前规则的超时重置这个计数器
-                    # if the new flag conflicts with a existed and timed flag, check and reset the flag's timer with the Expire given in the rule.
+                    # if the new flag conflicts with a existed and timing flag, check and reset the flag's timer with the Expire given in the rule.
                     hitTimer = self._timer.get(currentFlag, None)
                     Expire = rule.get('Expire', 0)
                     if hitTimer != None and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
