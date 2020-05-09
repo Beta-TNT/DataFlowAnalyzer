@@ -207,8 +207,8 @@ class AnalyseBase(object):
     @staticmethod
     def _DefaultFlagGenerator(InputData, InputTemplate, BytesDecoding='utf-16'):
         '默认的Flag生成函数，根据输入的数据和模板构造Flag。将模板里用大括号包起来的字段名替换为InputData对应字段的内容，如果包含bytes字段，需要指定解码方法'
-        #Default flag generator, replaces the placeholder substring like '{key}' with the value of InputData['key'].
-        #Bytes type will be encoded into str with given decoding.
+        #Default flag generator, replaces the placeholder substrings in InputTemplate like '{key}' with the value of InputData['key'].
+        #Bytes type will be decoded into str with given decoding.
         if InputTemplate == None:
             return None
 
@@ -325,6 +325,14 @@ class AnalyseBase(object):
         for rule in InputRules:  # 规则遍历主循环
             # 遍历检查单条规则
             # Tests every single rule on input data
+
+            if rule.get('Override', False):
+                #魔法开关Override，存在且不为False的时候，跳过字段匹配、Flag匹配和缓存管理，直接判定规则命中，调用规则命中后函数
+                #该字段相当于将分析算法的全部内部功能：字段匹配、Flag匹配和缓存管理全部交给用户函数ActionFunc()
+                #需要用户函数ActionFunc()能够操作当前分析算法实例，一般用于将分析逻辑全部托管给分析插件的需求场景
+                ActionFunc(InputData, rule, None, None)
+                continue
+
             ruleCheckResult, hitItem = self.SingleRuleTest(InputData, rule)
             if ruleCheckResult:  # 字段匹配和前序Flag匹配均命中（包括前序Flag为空的情况），规则命中
                 # 1、构造本级Flag；   Generate current flag;
@@ -352,6 +360,8 @@ class AnalyseBase(object):
                             timer = threading.Timer(Expire, self.__RemoveFlag, {currentFlag})
                             self._timer[currentFlag] = timer
                             timer.start()
+                            # 如果需要条件延迟启动定时器（比如threhold消耗完之后再启动），可设置两级串联规则。
+                            # 第一级是延迟条件（比如设置threhold）；第二级规则无条件，带定时器。之间用flag关联
                 else:
                     # Flag冲突时，检查FLAG是否对应一个定时器，命中规则是否带有超时规则。如果都具备，用当前规则的超时重置这个计数器
                     # if the new flag conflicts with a existed and timing flag, check and reset the flag's timer with the Expire given in the rule.
