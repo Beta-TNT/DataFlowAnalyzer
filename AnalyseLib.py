@@ -2,9 +2,11 @@
 
 __author__ = 'Beta-TNT'
 
-import re
+import re, os
 import threading
 from enum import IntEnum
+from abc import ABCMeta, abstractmethod
+from imp import find_module, load_module
 
 
 class OperatorCode(IntEnum):
@@ -39,12 +41,12 @@ class AnalyseBase(object):
     FlagThrehold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
     FlagLifetime：本级规则构造的Flag生存期。Flag被真正触发之后，相同的Flag再次触发会消耗1，消耗到0后Flag删除
     Expire      ：当前规则触发生成的Flag的生存时间，单位是秒，浮点数。如该项不存或0，则表示生存时间为无限
+    PluginName  ：需要调用的插件名
     FieldCheckList[]    ：字段匹配项列表
-
-    字段匹配项结构（字典）：
-    FieldName   ：要进行匹配的字段名
-    MatchContent：匹配内容
-    MatchCode   ：匹配方式代码
+        字段匹配项结构（字典）：
+        FieldName   ：要进行匹配的字段名
+        MatchContent：匹配内容
+        MatchCode   ：匹配方式代码
 
     缓存对象CacheItem（命中后存储的Flag对应的数据）：
     Threhold    ：  门槛消耗剩余，来自触发这条规则的FlagThrehold字段。
@@ -57,6 +59,55 @@ class AnalyseBase(object):
     ExtraData   ：  附加数据，可存储业务需要的任何数据。
     FlagContent ：  对应Flag的内容
     '''
+
+    class PluginBase(object):
+        '插件基类'
+        # 原插件功能设计逻辑：在派生类里作为规则命中之后执行的业务函数插入分析逻辑最后一步。
+        # 原插件用户函数传入数据项：已通过字段匹配以及Flag匹配的单条数据，命中的规则
+        # 原插件用户函数返回值：数据是否满足插件分析逻辑/Boolean
+        # 新插件预期功能：代替原分析算法逻辑里的SingleRuleTest()函数，并且可以自由调用原函数，以及在该函数逻辑前后追加其他处理代码
+
+        _ExtraRuleFields = {}
+        _AnalyseBase = None # 插件实例化时需要分析算法对象实例
+
+        def __init__(self, AnalyseBaseObj):
+            if type(AnalyseBaseObj) != AnalyseBase:
+                raise TypeError("Invaild AnalyseBaseObj Type, expecting AnalyseBase.")
+            self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
+
+        def _DefaultAnalyseSinlgeData(self, InputData, InputRule):
+            return self._AnalyseBase._DefaultSingleRuleTest(InputData, InputRule)
+
+        def AnalyseSinlgeData(self, InputData, InputRule):
+            '插件数据分析方法用户函数，接收被分析的dict()类型数据和规则作为参考数据，由用户函数判定是否满足规则。返回值定义同_DefaultSingleRuleTest()函数'
+            # 可以在分析数据之前对数据进行处理，比如编码转换或者格式化字符串等
+            # 如果没有特殊处理，也可以直接调用原分析逻辑的单条数据分析函数
+            # 如果需要对原分析逻辑处理结果进行进行再处理，可以这样：
+
+            # （数据预处理或者功能扩展）
+            # rtn = self._AnalyseBase._DefaultSingleRuleTest(InputData, InputRule)
+            # (对rtn进行再处理或者其他功能扩展)
+            # return rtn
+
+            # 特别注明，如果需要调用原分析逻辑里的单规则分析函数，
+            # 必须是_DefaultSingleRuleTest()，而非SingleRuleTest()
+            # 否则由于SingleRuleTest()里也会调用插件的AnalyseSinlgeData()函数，会形成无限递归
+
+            # 当前版本的分析插件用户函数仅作为分析逻辑里SingleRuleTest()函数的代用品
+            # 如果需要实现之前后置型分析插件用户函数，请在派生类里实现
+
+            # 该方法不做抽象方法，如果插件无需实现这部分分析逻辑，可不重写AnalyseSinlgeData()函数，默认执行原分析逻辑的单规则匹配函数
+            return self._DefaultAnalyseSinlgeData(InputData, InputRule)
+
+        @property
+        def PluginInstructions(self):
+            '插件介绍文字'
+            pass
+
+        @property
+        def ExtraRuleFields(self):
+            '插件独有的扩展规则字段，应返回一个dict()，其中key是字段名称，value是说明文字。无扩展字段可返回None'
+            return self._ExtraRuleFields
 
     class CacheItem(object):
         '算法缓存对象'
@@ -130,14 +181,40 @@ class AnalyseBase(object):
                 else:
                     return False
 
-    _rules = None  # 规则列表
     _cache = dict() # Flag-缓存对象字典
     _timer = dict() # Flag-计时器对象字典
+    _plugins = dict() # 插件名-插件对象实例字典
 
-    def __init__(self, InputRules = None):
-        if type(InputRules) != list:
-            raise TypeError('Invalid InputRules type, expecting list')
-        self._rules = InputRules    # 规则列表
+    PluginDir = os.path.abspath(os.path.dirname(__file__)) + '/plugins/' # 插件存放路径
+
+    def __init__(self):
+        self.__LoadPlugins('AnalysePlugin')
+
+    def __getPlugin(self): 
+        plugins = os.listdir(self.PluginDir)
+        fil = lambda str: (True, False)[str[-4:] == '.pyc' or str.find('__init__.py') != -1]
+        return filter(fil, plugins)
+
+    def __LoadPlugins(self, PluginInterfaceName):
+        '加载插件，返回包含所有有效插件实例的dict()，key是插件名，value是插件对象的实例'
+        if os.path.isdir(self.PluginDir):
+            self._plugins.clear()
+            print("Loading plugin(s)...")
+            for plugin in self.__getPlugin():
+                try:
+                    pluginName = os.path.splitext(plugin)[0]
+                    self._plugins[pluginName] = getattr(
+                        __import__(
+                            "plugins.{0}".format(pluginName),
+                            fromlist = [pluginName]
+                        ),
+                        PluginInterfaceName
+                    )(self)
+                    print(pluginName)
+                except Exception:
+                    continue
+            print("{0} plugin(s) loaded.".format(len(self._plugins)))
+
 
     def __RemoveFlag(self, InputFlag):
         if InputFlag in self._cache:
@@ -164,8 +241,9 @@ class AnalyseBase(object):
                 self._cache.pop(InputFlag)
             hitItem = None if not rtn else hitItem
             return rtn, hitItem
-
-    def _DefaultFieldCheck(self, TargetData, InputFieldCheckRule):
+    
+    @staticmethod
+    def _DefaultFieldCheck(TargetData, InputFieldCheckRule):
         '默认的字段检查函数，输入字段的内容以及单条字段检查规则，返回True/False'
         if type(InputFieldCheckRule) != dict:
             raise TypeError("Invalid InputFieldCheckRule type, expecting dict")
@@ -241,7 +319,7 @@ class AnalyseBase(object):
             for fieldChecker in InputRule["FieldCheckList"]:
                 if fieldChecker.get("FieldName") in InputData:
                     targetData = InputData.get(fieldChecker["FieldName"])
-                    fieldCheckResult = self.FieldCheck(targetData, fieldChecker)
+                    fieldCheckResult = AnalyseBase.FieldCheck(targetData, fieldChecker)
 
                 if InputRule["Operator"] in {OperatorCode.OpOr, OperatorCode.OpNotOr} and fieldCheckResult or \
                         InputRule["Operator"] in {OperatorCode.OpAnd, OperatorCode.OpNotAnd} and not fieldCheckResult:
@@ -275,9 +353,10 @@ class AnalyseBase(object):
         self._cache.clear()
         self._timer.clear()
 
-    def FieldCheck(self, TargetData, InputFieldCheckRule):
+    @staticmethod
+    def FieldCheck(TargetData, InputFieldCheckRule):
         '字段检查函数，可根据需要在派生类里重写。'
-        return self._DefaultFieldCheck(TargetData, InputFieldCheckRule)
+        return AnalyseBase._DefaultFieldCheck(TargetData, InputFieldCheckRule)
 
     def FlagCheck(self, InputFlag):
         'Flag检查函数，可根据需要在派生类里重写。应返回一个二元Tuple，分别是Flag是否有效，以及有效的Flag命中的对象。没有命中返回(False, None)'
@@ -294,16 +373,35 @@ class AnalyseBase(object):
         return AnalyseBase._DefaultFlagGenerator(InputData, InputTemplate)
 
     def SingleRuleTest(self, InputData, InputRule):
-        '单规则匹配函数，可根据需要在派生类里重写'
+        '单规则匹配函数，可根据需要在派生类里重写。本函数也是分析插件的入口位置'
         'Single rule test func, you may overwrite it in child class if necessary.'
-        return self._DefaultSingleRuleTest(InputData, InputRule)
+        # 插件入口做在这里。如果规则包含一个有效的插件名，则执行插件分析逻辑，否则执行默认分析逻辑
+        PluginObj = self._plugins.get(InputRule.get('PluginName', None), None)
+        if PluginObj:
+            return PluginObj.AnalyseSinlgeData(InputData, InputRule)
+        else:
+            return self._DefaultSingleRuleTest(InputData, InputRule)
+
+    def PluginExec(self, PluginName, InputData, InputRule):
+        '单独的插件执行函数，如果传入的插件名无效，返回(False, None)'
+        # 该方法的应用场景是一个插件调用另一个插件的情况。
+        # 如果用无效的插件名调用本函数，会抛出异常。
+        # 因此需要由父级插件调用_plugins()属性检查调用的子插件是否存在或者捕获异常
+        PluginObj = self._plugins.get(PluginName, None)
+        if PluginObj:
+            return PluginObj.AnalyseSinlgeData(InputData, InputRule)
+        else:
+            raise Exception("Plugin '%s' not found." % PluginName)
 
     def ClearCache(self):
         '清除缓存方法，重置缓存状态。可根据需要在派生类里重写'
         self._DefaultClearCache()
 
-    def AnalyseMain(self, InputData, ActionFunc, InputRules=_rules):
-        '''分析算法主函数。根据已经加载的规则和输入数据。
+    def AnalyseMain(self, InputData, ActionFunc, InputRules):
+        return self._DefaultAnalyseMain(InputData, ActionFunc, InputRules)
+
+    def _DefaultAnalyseMain(self, InputData, ActionFunc, InputRules):
+        '''默认的分析算法主函数。根据已经加载的规则和输入数据。
         基础分析算法判断是否匹配分为字段匹配和Flag匹配两部分，只有都匹配成功才算该条数据匹配成功。
         ActionFunc传入一个函数，该函数需要接收命中规则的数据inputData（dict）、对应命中的规则rule（dict）、命中的缓存对象hitItem(Obj)，生成的CurrentFlag（obj）作为参数,
         如果输入数据匹配成功，数据调用传入的ActionFunction()作为输出接口。每成功匹配一条规则，传入的ActionFunc()将被执行一次
@@ -325,13 +423,6 @@ class AnalyseBase(object):
         for rule in InputRules:  # 规则遍历主循环
             # 遍历检查单条规则
             # Tests every single rule on input data
-
-            if rule.get('Override', False):
-                #魔法开关Override，存在且不为False的时候，跳过字段匹配、Flag匹配和缓存管理，直接判定规则命中，调用规则命中后函数
-                #该字段相当于将分析算法的全部内部功能：字段匹配、Flag匹配和缓存管理全部交给用户函数ActionFunc()
-                #需要用户函数ActionFunc()能够操作当前分析算法实例，一般用于将分析逻辑全部托管给分析插件的需求场景
-                ActionFunc(InputData, rule, None, None)
-                continue
 
             ruleCheckResult, hitItem = self.SingleRuleTest(InputData, rule)
             if ruleCheckResult:  # 字段匹配和前序Flag匹配均命中（包括前序Flag为空的情况），规则命中
