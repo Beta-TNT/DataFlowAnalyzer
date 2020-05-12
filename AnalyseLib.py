@@ -75,7 +75,7 @@ class AnalyseBase(object):
                 raise TypeError("Invaild AnalyseBaseObj Type, expecting AnalyseBase.")
             self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
 
-        def _DefaultAnalyseSinlgeData(self, InputData, InputRule):
+        def _DefaultAnalyseSingleData(self, InputData, InputRule):
             return self._AnalyseBase._DefaultSingleRuleTest(InputData, InputRule)
 
         def AnalyseSinlgeData(self, InputData, InputRule):
@@ -97,7 +97,7 @@ class AnalyseBase(object):
             # 如果需要实现之前后置型分析插件用户函数，请在派生类里实现
 
             # 该方法不做抽象方法，如果插件无需实现这部分分析逻辑，可不重写AnalyseSinlgeData()函数，默认执行原分析逻辑的单规则匹配函数
-            return self._DefaultAnalyseSinlgeData(InputData, InputRule)
+            return self._DefaultAnalyseSingleData(InputData, InputRule)
 
         @property
         def PluginInstructions(self):
