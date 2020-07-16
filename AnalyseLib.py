@@ -8,29 +8,6 @@ from enum import IntEnum
 from abc import ABCMeta, abstractmethod
 from imp import find_module, load_module
 
-
-class OperatorCode(IntEnum):
-    OpOr = 0
-    OpAnd = 1
-    OpNotOr = 2
-    OpNotAnd = 3
-
-
-class MatchMode(IntEnum):
-    none = 0
-
-    Equal = 1  # 值等匹配。数字相等或者字符串完全一样
-    TextMatching = 2  # 文本匹配，忽略大小写
-    RegexMatching = 3  # 正则匹配
-    GreaterThan = 4  # 大于（数字）
-
-    # 负数为对应匹配方式的结果取反
-    NotEqual = -1
-    ReverseTextMatching = -2
-    ReverseRegexMatching = -3
-    LessThan = -4
-
-
 class AnalyseBase(object):
     '时序分析算法核心类'
 
@@ -60,6 +37,28 @@ class AnalyseBase(object):
     FlagContent ：  对应Flag的内容
     '''
 
+
+    class OperatorCode(IntEnum):
+        OpOr = 0
+        OpAnd = 1
+        OpNotOr = 2
+        OpNotAnd = 3
+
+
+    class MatchMode(IntEnum):
+        none = 0
+
+        Equal = 1  # 值等匹配。数字相等或者字符串完全一样
+        TextMatching = 2  # 文本匹配，忽略大小写
+        RegexMatching = 3  # 正则匹配
+        GreaterThan = 4  # 大于（数字）
+
+        # 负数为对应匹配方式的结果取反
+        NotEqual = -1
+        ReverseTextMatching = -2
+        ReverseRegexMatching = -3
+        LessThan = -4
+        
     class PluginBase(object):
         '插件基类'
         # 原插件功能设计逻辑：在派生类里作为规则命中之后执行的业务函数插入分析逻辑最后一步。
@@ -71,7 +70,7 @@ class AnalyseBase(object):
         _AnalyseBase = None # 插件实例化时需要分析算法对象实例
 
         def __init__(self, AnalyseBaseObj):
-            if type(AnalyseBaseObj) != AnalyseBase:
+            if not (type(AnalyseBaseObj) == AnalyseBase or type(AnalyseBaseObj).__base__ == AnalyseBase):
                 raise TypeError("Invaild AnalyseBaseObj Type, expecting AnalyseBase.")
             self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
 
@@ -249,27 +248,27 @@ class AnalyseBase(object):
             raise TypeError("Invalid InputFieldCheckRule type, expecting dict")
         fieldCheckResult = False
         MatchContent = InputFieldCheckRule["MatchContent"]
-        if InputFieldCheckRule["MatchCode"] in {MatchMode.Equal, MatchMode.NotEqual}:
+        if InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.Equal, AnalyseBase.MatchMode.NotEqual}:
             # 相等匹配 equal test
             if type(MatchContent) == type(TargetData):  # 同数据类型，直接判断
                 fieldCheckResult = (MatchContent == TargetData)
             else:  # 不同数据类型，都转换成字符串判断
                 fieldCheckResult = (str(MatchContent) == str(TargetData))
-        elif InputFieldCheckRule["MatchCode"] in {MatchMode.TextMatching, MatchMode.ReverseTextMatching}:
+        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.TextMatching, AnalyseBase.MatchMode.ReverseTextMatching}:
             # 文本匹配（字符串） text matching (ignore case)
             if type(MatchContent) != str:
                 MatchContent = str(MatchContent)
             if type(TargetData) != str:
                 TargetData = str(TargetData)
             fieldCheckResult = (TargetData.lower().find(MatchContent.lower()) != -1)
-        elif InputFieldCheckRule["MatchCode"] in {MatchMode.RegexMatching, MatchMode.ReverseRegexMatching}:
+        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.RegexMatching, AnalyseBase.MatchMode.ReverseRegexMatching}:
             # 正则匹配（字符串） regex match
             if type(MatchContent) != str:
                 MatchContent = str(MatchContent)
             if type(TargetData) != str:
                 TargetData = str(TargetData)
             fieldCheckResult = (re.match(MatchContent, TargetData) != None)
-        elif InputFieldCheckRule["MatchCode"] in {MatchMode.GreaterThan, MatchMode.LessThan}:
+        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.GreaterThan, AnalyseBase.MatchMode.LessThan}:
             # 大小比较（数字，字符串尝试转换成数字，转换不成功略过该字段匹配）
             if type(MatchContent) in {int, float} and type(TargetData) in {int, float}:
                 fieldCheckResult = (MatchContent > TargetData)
@@ -314,23 +313,37 @@ class AnalyseBase(object):
             raise TypeError("Invalid InputData or InputRule type, expecting dict")
 
         fieldCheckResult = False
-        if type(InputRule["FieldCheckList"]) in (dict, list):
-            # 字段检查遍历循环，用字段检查规则轮数据
-            for fieldChecker in InputRule["FieldCheckList"]:
-                if fieldChecker.get("FieldName") in InputData:
-                    targetData = InputData.get(fieldChecker["FieldName"])
-                    fieldCheckResult = AnalyseBase.FieldCheck(targetData, fieldChecker)
+        if '__iter__' in dir(InputRule["FieldCheckList"]):# FieldCheckList must be an iterable
 
-                if InputRule["Operator"] in {OperatorCode.OpOr, OperatorCode.OpNotOr} and fieldCheckResult or \
-                        InputRule["Operator"] in {OperatorCode.OpAnd, OperatorCode.OpNotAnd} and not fieldCheckResult:
-                    # Or/NotOr，  第一个True结果即可结束字段判断
-                    # And/NotAnd，第一个False结果即可结束字段判断
-                    # Field value tests would be ended at first true result on Or/NotOr, or first false result on And/NotAnd,
-                    # the rest tests would be abanboned.
-                    break
+            fieldCheckResults = map(
+                lambda y:AnalyseBase.FieldCheck(InputData, y),
+                filter(
+                    lambda x:x.get('FieldName') in InputData,
+                    InputRule["FieldCheckList"]
+                )
+            )
+            if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr}:
+                fieldCheckResult = any(fieldCheckResults)
+            elif InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd}:
+                fieldCheckResult = all(fieldCheckResults)
 
-            if InputRule["Operator"] in {OperatorCode.OpNotAnd, OperatorCode.OpNotOr}:
+            if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpNotOr, AnalyseBase.OperatorCode.OpNotAnd}:
                 fieldCheckResult = not fieldCheckResult
+
+            # for fieldChecker in InputRule["FieldCheckList"]:
+            #     if fieldChecker.get("FieldName") in InputData:
+            #         fieldCheckResult = AnalyseBase.FieldCheck(InputData.get(fieldChecker["FieldName"]), fieldChecker)
+
+            #     if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr} and fieldCheckResult or \
+            #             InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd} and not fieldCheckResult:
+            #         # Or/NotOr，  第一个True结果即可结束字段判断
+            #         # And/NotAnd，第一个False结果即可结束字段判断
+            #         # Field value tests would be ended at first true result on Or/NotOr, or first false result on And/NotAnd,
+            #         # the rest tests would be abanboned.
+            #         break
+            
+            # if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpNotAnd, AnalyseBase.OperatorCode.OpNotOr}:
+            #     fieldCheckResult = not fieldCheckResult
         else:
             # 字段匹配列表为空，直接判定字段匹配通过
             # Field check is None, ignore it.
