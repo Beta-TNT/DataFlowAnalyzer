@@ -77,7 +77,7 @@ class AnalyseBase(object):
         def _DefaultAnalyseSingleData(self, InputData, InputRule):
             return self._AnalyseBase._DefaultSingleRuleTest(InputData, InputRule)
 
-        def AnalyseSinlgeData(self, InputData, InputRule):
+        def AnalyseSingleData(self, InputData, InputRule):
             '插件数据分析方法用户函数，接收被分析的dict()类型数据和规则作为参考数据，由用户函数判定是否满足规则。返回值定义同_DefaultSingleRuleTest()函数'
             # 可以在分析数据之前对数据进行处理，比如编码转换或者格式化字符串等
             # 如果没有特殊处理，也可以直接调用原分析逻辑的单条数据分析函数
@@ -246,35 +246,38 @@ class AnalyseBase(object):
         '默认的字段检查函数，输入字段的内容以及单条字段检查规则，返回True/False'
         if type(InputFieldCheckRule) != dict:
             raise TypeError("Invalid InputFieldCheckRule type, expecting dict")
+        if InputFieldCheckRule['FieldName'] not in TargetData:
+            return False
         fieldCheckResult = False
-        MatchContent = InputFieldCheckRule["MatchContent"]
+        MatchContentLeft = InputFieldCheckRule["MatchContent"]
+        MatchContentRight = TargetData[InputFieldCheckRule['FieldName']]
         if InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.Equal, AnalyseBase.MatchMode.NotEqual}:
             # 相等匹配 equal test
-            if type(MatchContent) == type(TargetData):  # 同数据类型，直接判断
-                fieldCheckResult = (MatchContent == TargetData)
+            if type(MatchContentLeft) == type(MatchContentRight):  # 同数据类型，直接判断
+                fieldCheckResult = (MatchContentLeft == MatchContentRight)
             else:  # 不同数据类型，都转换成字符串判断
-                fieldCheckResult = (str(MatchContent) == str(TargetData))
+                fieldCheckResult = (str(MatchContentLeft) == str(MatchContentRight))
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.TextMatching, AnalyseBase.MatchMode.ReverseTextMatching}:
             # 文本匹配（字符串） text matching (ignore case)
-            if type(MatchContent) != str:
-                MatchContent = str(MatchContent)
-            if type(TargetData) != str:
-                TargetData = str(TargetData)
-            fieldCheckResult = (TargetData.lower().find(MatchContent.lower()) != -1)
+            if type(MatchContentLeft) != str:
+                MatchContentLeft = str(MatchContentLeft)
+            if type(MatchContentRight) != str:
+                MatchContentRight = str(MatchContentRight)
+            fieldCheckResult = (MatchContentRight.lower().find(MatchContentLeft.lower()) != -1)
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.RegexMatching, AnalyseBase.MatchMode.ReverseRegexMatching}:
             # 正则匹配（字符串） regex match
-            if type(MatchContent) != str:
-                MatchContent = str(MatchContent)
-            if type(TargetData) != str:
-                TargetData = str(TargetData)
-            fieldCheckResult = (re.match(MatchContent, TargetData) != None)
+            if type(MatchContentLeft) != str:
+                MatchContentLeft = str(MatchContentLeft)
+            if type(MatchContentRight) != str:
+                MatchContentRight = str(MatchContentRight)
+            fieldCheckResult = (re.match(MatchContentLeft, MatchContentRight) != None)
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.GreaterThan, AnalyseBase.MatchMode.LessThan}:
             # 大小比较（数字，字符串尝试转换成数字，转换不成功略过该字段匹配）
-            if type(MatchContent) in {int, float} and type(TargetData) in {int, float}:
-                fieldCheckResult = (MatchContent > TargetData)
+            if type(MatchContentLeft) in {int, float} and type(MatchContentRight) in {int, float}:
+                fieldCheckResult = (MatchContentLeft > MatchContentRight)
             else:
                 try:
-                    fieldCheckResult = (int(MatchContent) > int(TargetData))
+                    fieldCheckResult = (int(MatchContentLeft) > int(MatchContentRight))
                 except Exception:
                     pass
         if InputFieldCheckRule["MatchCode"] < 0:  # 负数代码，结果取反
@@ -313,8 +316,7 @@ class AnalyseBase(object):
             raise TypeError("Invalid InputData or InputRule type, expecting dict")
 
         fieldCheckResult = False
-        if '__iter__' in dir(InputRule["FieldCheckList"]):# FieldCheckList must be an iterable
-
+        if type(InputRule["FieldCheckList"]) in (dict, list):
             fieldCheckResults = map(
                 lambda y:AnalyseBase.FieldCheck(InputData, y),
                 filter(
@@ -322,6 +324,7 @@ class AnalyseBase(object):
                     InputRule["FieldCheckList"]
                 )
             )
+
             if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr}:
                 fieldCheckResult = any(fieldCheckResults)
             elif InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd}:
@@ -330,20 +333,17 @@ class AnalyseBase(object):
             if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpNotOr, AnalyseBase.OperatorCode.OpNotAnd}:
                 fieldCheckResult = not fieldCheckResult
 
-            # for fieldChecker in InputRule["FieldCheckList"]:
-            #     if fieldChecker.get("FieldName") in InputData:
-            #         fieldCheckResult = AnalyseBase.FieldCheck(InputData.get(fieldChecker["FieldName"]), fieldChecker)
+                # if fieldChecker.get("FieldName") in InputData:
+                #     targetData = InputData.get(fieldChecker["FieldName"])
+                #     fieldCheckResult = AnalyseBase.FieldCheck(targetData, fieldChecker)
 
-            #     if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr} and fieldCheckResult or \
-            #             InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd} and not fieldCheckResult:
-            #         # Or/NotOr，  第一个True结果即可结束字段判断
-            #         # And/NotAnd，第一个False结果即可结束字段判断
-            #         # Field value tests would be ended at first true result on Or/NotOr, or first false result on And/NotAnd,
-            #         # the rest tests would be abanboned.
-            #         break
-            
-            # if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpNotAnd, AnalyseBase.OperatorCode.OpNotOr}:
-            #     fieldCheckResult = not fieldCheckResult
+                # if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr} and fieldCheckResult or \
+                #         InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd} and not fieldCheckResult:
+                #     # Or/NotOr，  第一个True结果即可结束字段判断
+                #     # And/NotAnd，第一个False结果即可结束字段判断
+                #     # Field value tests would be ended at first true result on Or/NotOr, or first false result on And/NotAnd,
+                #     # the rest tests would be abanboned.
+                #     break
         else:
             # 字段匹配列表为空，直接判定字段匹配通过
             # Field check is None, ignore it.
@@ -389,9 +389,10 @@ class AnalyseBase(object):
         '单规则匹配函数，可根据需要在派生类里重写。本函数也是分析插件的入口位置'
         'Single rule test func, you may overwrite it in child class if necessary.'
         # 插件入口做在这里。如果规则包含一个有效的插件名，则执行插件分析逻辑，否则执行默认分析逻辑
+        # 因此，如果需要在插件功能执行的同时还需要默认分析逻辑，请在插件代码中调用
         PluginObj = self._plugins.get(InputRule.get('PluginName', None), None)
         if PluginObj:
-            return PluginObj.AnalyseSinlgeData(InputData, InputRule)
+            return PluginObj.AnalyseSingleData(InputData, InputRule)
         else:
             return self._DefaultSingleRuleTest(InputData, InputRule)
 
@@ -436,7 +437,7 @@ class AnalyseBase(object):
         for rule in InputRules:  # 规则遍历主循环
             # 遍历检查单条规则
             # Tests every single rule on input data
-
+            # 如果规则包含插件，将在单规则检查函数中被调用
             ruleCheckResult, hitItem = self.SingleRuleTest(InputData, rule)
             if ruleCheckResult:  # 字段匹配和前序Flag匹配均命中（包括前序Flag为空的情况），规则命中
                 # 1、构造本级Flag；   Generate current flag;
@@ -444,7 +445,7 @@ class AnalyseBase(object):
                 # 3、以本级Flag作为Key，新的CacheItem作为Value，存入self._cache[]； Save cache item into self._cache[], with current flag as key
                 currentFlag = self.FlagGenerator(InputData, rule["CurrentFlag"])
                 newDataItem = ActionFunc(InputData, rule, hitItem, currentFlag)
-                if currentFlag not in self._cache and currentFlag != None:
+                if currentFlag and currentFlag not in self._cache:
                     # 将命中规则的数据、规则本身、命中的缓存对象以及命中的Flag传给用户函数，获得用户函数返回值
                     # 如果是入口点规则，命中的缓存对象是None，用户函数可据此判断
                     # Passing the key data, hit rule itself, hit cache item (None if the data hits a init rule) and flag to ActionFunc()
@@ -471,9 +472,9 @@ class AnalyseBase(object):
                     # if the new flag conflicts with a existed and timing flag, check and reset the flag's timer with the Expire given in the rule.
                     hitTimer = self._timer.get(currentFlag, None)
                     Expire = rule.get('Expire', 0)
-                    if hitTimer != None and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
+                    if hitTimer and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
                         hitTimer.cancel()
-                        resetTimer = threading.Timer(Expire, self.__RemoveFlag, {currentFlag})
+                        resetTimer = threading.Timer(Expire, self.__RemoveFlag, [currentFlag])
                         self._timer[currentFlag] = resetTimer
                         resetTimer.start()
                     pass
