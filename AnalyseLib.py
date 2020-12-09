@@ -246,38 +246,35 @@ class AnalyseBase(object):
         '默认的字段检查函数，输入字段的内容以及单条字段检查规则，返回True/False'
         if type(InputFieldCheckRule) != dict:
             raise TypeError("Invalid InputFieldCheckRule type, expecting dict")
-        if InputFieldCheckRule['FieldName'] not in TargetData:
-            return False
         fieldCheckResult = False
-        MatchContentLeft = InputFieldCheckRule["MatchContent"]
-        MatchContentRight = TargetData[InputFieldCheckRule['FieldName']]
+        MatchContent = InputFieldCheckRule["MatchContent"]
         if InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.Equal, AnalyseBase.MatchMode.NotEqual}:
             # 相等匹配 equal test
-            if type(MatchContentLeft) == type(MatchContentRight):  # 同数据类型，直接判断
-                fieldCheckResult = (MatchContentLeft == MatchContentRight)
+            if type(MatchContent) == type(TargetData):  # 同数据类型，直接判断
+                fieldCheckResult = (MatchContent == TargetData)
             else:  # 不同数据类型，都转换成字符串判断
-                fieldCheckResult = (str(MatchContentLeft) == str(MatchContentRight))
+                fieldCheckResult = (str(MatchContent) == str(TargetData))
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.TextMatching, AnalyseBase.MatchMode.ReverseTextMatching}:
             # 文本匹配（字符串） text matching (ignore case)
-            if type(MatchContentLeft) != str:
-                MatchContentLeft = str(MatchContentLeft)
-            if type(MatchContentRight) != str:
-                MatchContentRight = str(MatchContentRight)
-            fieldCheckResult = (MatchContentRight.lower().find(MatchContentLeft.lower()) != -1)
+            if type(MatchContent) != str:
+                MatchContent = str(MatchContent)
+            if type(TargetData) != str:
+                TargetData = str(TargetData)
+            fieldCheckResult = (TargetData.lower().find(MatchContent.lower()) != -1)
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.RegexMatching, AnalyseBase.MatchMode.ReverseRegexMatching}:
             # 正则匹配（字符串） regex match
-            if type(MatchContentLeft) != str:
-                MatchContentLeft = str(MatchContentLeft)
-            if type(MatchContentRight) != str:
-                MatchContentRight = str(MatchContentRight)
-            fieldCheckResult = (re.match(MatchContentLeft, MatchContentRight) != None)
+            if type(MatchContent) != str:
+                MatchContent = str(MatchContent)
+            if type(TargetData) != str:
+                TargetData = str(TargetData)
+            fieldCheckResult = (re.match(MatchContent, TargetData) != None)
         elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.GreaterThan, AnalyseBase.MatchMode.LessThan}:
             # 大小比较（数字，字符串尝试转换成数字，转换不成功略过该字段匹配）
-            if type(MatchContentLeft) in {int, float} and type(MatchContentRight) in {int, float}:
-                fieldCheckResult = (MatchContentLeft > MatchContentRight)
+            if type(MatchContent) in {int, float} and type(TargetData) in {int, float}:
+                fieldCheckResult = (MatchContent > TargetData)
             else:
                 try:
-                    fieldCheckResult = (int(MatchContentLeft) > int(MatchContentRight))
+                    fieldCheckResult = (int(MatchContent) > int(TargetData))
                 except Exception:
                     pass
         if InputFieldCheckRule["MatchCode"] < 0:  # 负数代码，结果取反
@@ -318,7 +315,7 @@ class AnalyseBase(object):
         fieldCheckResult = False
         if type(InputRule["FieldCheckList"]) in (dict, list):
             fieldCheckResults = map(
-                lambda y:AnalyseBase.FieldCheck(InputData, y),
+                lambda y:AnalyseBase.FieldCheck(InputData[y['FieldName']], y),
                 filter(
                     lambda x:x.get('FieldName') in InputData,
                     InputRule["FieldCheckList"]
