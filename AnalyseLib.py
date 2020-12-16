@@ -6,7 +6,6 @@ import re, os
 import threading
 from enum import IntEnum
 from abc import ABCMeta, abstractmethod
-from imp import find_module, load_module
 
 class AnalyseBase(object):
     '时序分析算法核心类'
@@ -14,6 +13,7 @@ class AnalyseBase(object):
     '''规则字段结构（字典）：
     Operator    ：字段匹配运算，见OperatorCode
     PrevFlag    ：时序分析算法历史匹配Flag构造模板，为空则是入口点规则
+    RemoveFlag  ：字段匹配规则和历史匹配Flag命中之后，需要删除的Flag。Flag不存在不会触发异常
     CurrentFlag ：时序分析算法本级规则命中后构造Flag的模板
     FlagThrehold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
     FlagLifetime：本级规则构造的Flag生存期。Flag被真正触发之后，相同的Flag再次触发会消耗1，消耗到0后Flag删除
@@ -24,7 +24,6 @@ class AnalyseBase(object):
         FieldName   ：要进行匹配的字段名
         MatchContent：匹配内容
         MatchCode   ：匹配方式代码
-
     缓存对象CacheItem（命中后存储的Flag对应的数据）：
     Threhold    ：  门槛消耗剩余，来自触发这条规则的FlagThrehold字段。
                     Flag生成之后每次命中Threhold消耗1，直到Threhold变为0时这个Flag才能正式生效。
@@ -39,25 +38,29 @@ class AnalyseBase(object):
 
 
     class OperatorCode(IntEnum):
-        OpOr = 0
+        Preserve = 0 # 预留
         OpAnd = 1
-        OpNotOr = 2
-        OpNotAnd = 3
+        OpOr = 2
+        # 逻辑代码对应的负数代表结果取反，例如-1代表NotAnd，不再显式声明
 
 
     class MatchMode(IntEnum):
-        none = 0
-
+        Preserve = 0 # 为带字段比较功能插件预留
         Equal = 1  # 值等匹配。数字相等或者字符串完全一样
         TextMatching = 2  # 文本匹配，忽略大小写
         RegexMatching = 3  # 正则匹配
         GreaterThan = 4  # 大于（数字）
+        LengthEqual = 5 # 元数据比较：数据长度等于（忽略数字类型数据）
+        LengthGreaterThan = 6 # 元数据比较：数据长度大于（忽略数字类型数据）
+        # 匹配代码对应的负数代表结果取反，例如-1代表不等于（NotEqual），不再显式声明
 
-        # 负数为对应匹配方式的结果取反
-        NotEqual = -1
-        ReverseTextMatching = -2
-        ReverseRegexMatching = -3
-        LessThan = -4
+        # 原本考虑加入翻转比较运算（Reverse），交换比较运算的左值和右值，但考虑之后发现不具备实际意义：
+        # 1、翻转比较不影响相等比较的结果；
+        # 2、翻转比较用于多结果文本匹配的时候，完全可以用OpOr运算符并列多次比较代替；
+        # 3、翻转比较用于正则匹配（将输入数据而非规则作为正则表达式）时会导致完全无法预料的结果；
+        # 4、翻转比较用于数字大于比较的时候，和小于等于运算等价，可以用-4代替；
+        # 5、翻转比较无法用于元数据比较
+        # 综上，对于所有比较运算，翻转比较都不具备实际意义或者可用已有方式代替，因此不将其加入功能
         
     class PluginBase(object):
         '插件基类'
@@ -156,7 +159,8 @@ class AnalyseBase(object):
                 return False
 
         def _ConsumeLifetime(self):
-            '消耗生存期操作。如果还在生存期内或者生存期无限（值为0）返回True，否则返回false并将Valid属性设为False'
+            '消耗生存期操作。如果还在生存期内或者生存期无限（值为0）返回True，否则返回False并将Valid属性设为False'
+            # Lifetime由1变成0的时候才会使得_Valid变为False，初始就是0时表示无限
             if self._Valid == False:
                 return False
 
@@ -189,10 +193,11 @@ class AnalyseBase(object):
     def __init__(self):
         self.__LoadPlugins('AnalysePlugin')
 
-    def __getPlugin(self): 
-        plugins = os.listdir(self.PluginDir)
-        fil = lambda str: (True, False)[str[-4:] == '.pyc' or str.find('__init__.py') != -1]
-        return filter(fil, plugins)
+    def __getPlugin(self):
+        return filter(
+            lambda str:(True, False)[str[-4:] == '.pyc' or str.find('__init__.py') != -1],
+            os.listdir(self.PluginDir)
+        )
 
     def __LoadPlugins(self, PluginInterfaceName):
         '加载插件，返回包含所有有效插件实例的dict()，key是插件名，value是插件对象的实例'
@@ -216,6 +221,7 @@ class AnalyseBase(object):
 
 
     def __RemoveFlag(self, InputFlag):
+        '尝试移除指定的Flag，包括缓存和计时器'
         if InputFlag in self._cache:
             self._cache.pop(InputFlag)
         if InputFlag in self._timer:
@@ -247,38 +253,60 @@ class AnalyseBase(object):
         if type(InputFieldCheckRule) != dict:
             raise TypeError("Invalid InputFieldCheckRule type, expecting dict")
         fieldCheckResult = False
-        MatchContent = InputFieldCheckRule["MatchContent"]
-        if InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.Equal, AnalyseBase.MatchMode.NotEqual}:
+        matchContent = InputFieldCheckRule["MatchContent"]
+        matchCode = InputFieldCheckRule["MatchCode"]
+        if matchCode == AnalyseBase.MatchMode.Preserve:
+            pass
+        elif abs(matchCode) == AnalyseBase.MatchMode.Equal:
             # 相等匹配 equal test
-            if type(MatchContent) == type(TargetData):  # 同数据类型，直接判断
-                fieldCheckResult = (MatchContent == TargetData)
+            if type(matchContent) == type(TargetData):  # 同数据类型，直接判断
+                fieldCheckResult = (matchContent == TargetData)
             else:  # 不同数据类型，都转换成字符串判断
-                fieldCheckResult = (str(MatchContent) == str(TargetData))
-        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.TextMatching, AnalyseBase.MatchMode.ReverseTextMatching}:
+                fieldCheckResult = (str(matchContent) == str(TargetData))
+        elif abs(matchCode) == AnalyseBase.MatchMode.TextMatching:
             # 文本匹配（字符串） text matching (ignore case)
-            if type(MatchContent) != str:
-                MatchContent = str(MatchContent)
+            if type(matchContent) != str:
+                matchContent = str(matchContent)
             if type(TargetData) != str:
                 TargetData = str(TargetData)
-            fieldCheckResult = (TargetData.lower().find(MatchContent.lower()) != -1)
-        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.RegexMatching, AnalyseBase.MatchMode.ReverseRegexMatching}:
+            fieldCheckResult = (TargetData in matchContent)
+        elif abs(matchCode) == AnalyseBase.MatchMode.RegexMatching:
             # 正则匹配（字符串） regex match
-            if type(MatchContent) != str:
-                MatchContent = str(MatchContent)
+            if type(matchContent) != str:
+                matchContent = str(matchContent)
             if type(TargetData) != str:
                 TargetData = str(TargetData)
-            fieldCheckResult = (re.match(MatchContent, TargetData) != None)
-        elif InputFieldCheckRule["MatchCode"] in {AnalyseBase.MatchMode.GreaterThan, AnalyseBase.MatchMode.LessThan}:
+            fieldCheckResult = bool(re.match(matchContent, TargetData))
+        elif abs(matchCode) == AnalyseBase.MatchMode.GreaterThan:
             # 大小比较（数字，字符串尝试转换成数字，转换不成功略过该字段匹配）
-            if type(MatchContent) in {int, float} and type(TargetData) in {int, float}:
-                fieldCheckResult = (MatchContent > TargetData)
+            if type(matchContent) in (int, float) and type(TargetData) in (int, float):
+                fieldCheckResult = (matchContent > TargetData)
             else:
                 try:
-                    fieldCheckResult = (int(MatchContent) > int(TargetData))
-                except Exception:
+                    fieldCheckResult = (int(matchContent) > int(TargetData))
+                except:
                     pass
-        if InputFieldCheckRule["MatchCode"] < 0:  # 负数代码，结果取反
-            fieldCheckResult = not fieldCheckResult
+        elif abs(matchCode) == AnalyseBase.MatchMode.LengthEqual:
+            # 元数据比较：数据长度相等。忽略无法比较长度的数字类型
+            if type(matchContent) not in (int, float):
+                try:
+                    fieldCheckResult = (len(matchContent) == int(TargetData))
+                except:
+                    pass
+            else:
+                pass
+        elif abs(matchCode) == AnalyseBase.MatchMode.LengthGreaterThan:
+            # 元数据比较：数据长度大于。忽略无法比较长度的数字类型
+            if type(matchContent) not in (int, float):
+                try:
+                    fieldCheckResult = (len(matchContent) > int(TargetData))
+                except:
+                    pass
+            else:
+                pass
+        else:
+            pass
+        fieldCheckResult = (matchCode < 0 ^ fieldCheckResult) # 负数代码，结果取反
         return fieldCheckResult
 
     @staticmethod
@@ -286,7 +314,7 @@ class AnalyseBase(object):
         '默认的Flag生成函数，根据输入的数据和模板构造Flag。将模板里用大括号包起来的字段名替换为InputData对应字段的内容，如果包含bytes字段，需要指定解码方法'
         #Default flag generator, replaces the placeholder substrings in InputTemplate like '{key}' with the value of InputData['key'].
         #Bytes type will be decoded into str with given decoding.
-        if InputTemplate == None:
+        if not InputTemplate:
             return None
 
         if type(InputTemplate) != str:
@@ -296,7 +324,7 @@ class AnalyseBase(object):
             
         for inputDataKey in InputData:
             inputDataItem = InputData[inputDataKey]
-            if type(inputDataItem) == bytes:
+            if type(inputDataItem) in (bytes, bytearray):
                 try:
                     InputData[inputDataKey] = inputDataItem.decode(BytesDecoding)
                 except Exception:
@@ -321,26 +349,12 @@ class AnalyseBase(object):
                     InputRule["FieldCheckList"]
                 )
             )
-
-            if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr}:
+            if abs(InputRule["Operator"]) == AnalyseBase.OperatorCode.OpOr:
                 fieldCheckResult = any(fieldCheckResults)
-            elif InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd}:
+            elif abs(InputRule["Operator"]) == AnalyseBase.OperatorCode.OpAnd:
                 fieldCheckResult = all(fieldCheckResults)
 
-            if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpNotOr, AnalyseBase.OperatorCode.OpNotAnd}:
-                fieldCheckResult = not fieldCheckResult
-
-                # if fieldChecker.get("FieldName") in InputData:
-                #     targetData = InputData.get(fieldChecker["FieldName"])
-                #     fieldCheckResult = AnalyseBase.FieldCheck(targetData, fieldChecker)
-
-                # if InputRule["Operator"] in {AnalyseBase.OperatorCode.OpOr, AnalyseBase.OperatorCode.OpNotOr} and fieldCheckResult or \
-                #         InputRule["Operator"] in {AnalyseBase.OperatorCode.OpAnd, AnalyseBase.OperatorCode.OpNotAnd} and not fieldCheckResult:
-                #     # Or/NotOr，  第一个True结果即可结束字段判断
-                #     # And/NotAnd，第一个False结果即可结束字段判断
-                #     # Field value tests would be ended at first true result on Or/NotOr, or first false result on And/NotAnd,
-                #     # the rest tests would be abanboned.
-                #     break
+            fieldCheckResult = (InputRule["Operator"] < 0 ^ fieldCheckResult) # 负数匹配代码结果取反
         else:
             # 字段匹配列表为空，直接判定字段匹配通过
             # Field check is None, ignore it.
@@ -387,7 +401,7 @@ class AnalyseBase(object):
         'Single rule test func, you may overwrite it in child class if necessary.'
         # 插件入口做在这里。如果规则包含一个有效的插件名，则执行插件分析逻辑，否则执行默认分析逻辑
         # 因此，如果需要在插件功能执行的同时还需要默认分析逻辑，请在插件代码中调用
-        PluginObj = self._plugins.get(InputRule.get('PluginName', None), None)
+        PluginObj = self._plugins.get(InputRule.get('PluginName'))
         if PluginObj:
             return PluginObj.AnalyseSingleData(InputData, InputRule)
         else:
@@ -410,6 +424,11 @@ class AnalyseBase(object):
 
     def AnalyseMain(self, InputData, ActionFunc, InputRules):
         return self._DefaultAnalyseMain(InputData, ActionFunc, InputRules)
+    
+    def _DummyActionFunc(self, InputData, rule, hitItem, currentFlag):
+        import uuid
+        return uuid.uuid1()
+
 
     def _DefaultAnalyseMain(self, InputData, ActionFunc, InputRules):
         '''默认的分析算法主函数。根据已经加载的规则和输入数据。
@@ -428,7 +447,10 @@ class AnalyseBase(object):
 
         if type(InputData) != dict:
             raise TypeError("Invalid InputData type, expecting dict()")
-
+        
+        if not ActionFunc:
+            ActionFunc = self._DummyActionFunc
+            
         rtn = set()  # 该条数据命中的缓存对象集合
 
         for rule in InputRules:  # 规则遍历主循环
@@ -440,18 +462,21 @@ class AnalyseBase(object):
                 # 1、构造本级Flag；   Generate current flag;
                 # 2、调用ActionFunc()获得用户数据，构造CacheItem对象；  Call ActionFunc() to get a user defined data
                 # 3、以本级Flag作为Key，新的CacheItem作为Value，存入self._cache[]； Save cache item into self._cache[], with current flag as key
-                currentFlag = self.FlagGenerator(InputData, rule["CurrentFlag"])
+                currentFlag = self.FlagGenerator(InputData, rule.get("CurrentFlag"))
+                removeFlag = self.FlagGenerator(InputData, rule.get("RemoveFlag"))
+                self.__RemoveFlag(removeFlag)
                 newDataItem = ActionFunc(InputData, rule, hitItem, currentFlag)
                 if currentFlag and currentFlag not in self._cache:
                     # 将命中规则的数据、规则本身、命中的缓存对象以及命中的Flag传给用户函数，获得用户函数返回值
                     # 如果是入口点规则，命中的缓存对象是None，用户函数可据此判断
                     # Passing the key data, hit rule itself, hit cache item (None if the data hits a init rule) and flag to ActionFunc()
-                    if newDataItem != None:  # 用户层还可以再做一次判断，如果用户认为已经满足字段匹配和前序FLAG匹配的数据仍不符合分析条件，可返回None，缓存数据将不会被记录
+                    if newDataItem:  # 用户层还可以再做一次判断，如果用户认为已经满足字段匹配和前序FLAG匹配的数据仍不符合分析条件，可返回None，缓存数据将不会被记录
                         newCacheItem = self.CacheItem(
                             currentFlag,
-                            rule["FlagThrehold"],
-                            rule["FlagLifetime"],
-                            newDataItem)
+                            rule.get("FlagThrehold", 0),
+                            rule.get("FlagLifetime", 0),
+                            newDataItem
+                        )
                         # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be in the return.
                         self._cache[currentFlag] = newCacheItem
                         rtn.add(newCacheItem)
