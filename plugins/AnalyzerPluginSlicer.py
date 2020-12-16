@@ -11,7 +11,7 @@ class AnalysePlugin(AnalyseLib.AnalyseBase.PluginBase):
         # 重写原构造函数，加载配置
         self._CurrentPluginName =os.path.splitext(os.path.basename(__file__))[0]
 
-    def _AnalyseSinlgeData(self, InputData, InputRule):
+    def AnalyseSinlgeData(self, InputData, InputRule):
         '插件数据分析方法用户函数，接收被分析的dict()类型数据和规则作为参考数据，由用户函数判定是否满足规则。返回值定义同_DefaultSingleRuleTest()函数'
         # 切片比较插件
         # 在字段比较子规则里加入SliceFrom和SliceTo两个字段，整数，可为负,后者可以为None，实际上就是Python切片操作的前后两个参数
