@@ -15,7 +15,7 @@ class AnalyseBase(object):
     PrevFlag    ：时序分析算法历史匹配Flag构造模板，为空则是入口点规则
     RemoveFlag  ：字段匹配规则和历史匹配Flag命中之后，需要删除的Flag。Flag不存在不会触发异常
     CurrentFlag ：时序分析算法本级规则命中后构造Flag的模板
-    FlagThrehold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
+    FlagThreshold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
     FlagLifetime：本级规则构造的Flag生存期。Flag被真正触发之后，相同的Flag再次触发会消耗1，消耗到0后Flag删除
     Expire      ：当前规则触发生成的Flag的生存时间，单位是秒，浮点数。如该项不存或0，则表示生存时间为无限
     PluginName  ：需要调用的插件名
@@ -24,16 +24,6 @@ class AnalyseBase(object):
         FieldName   ：要进行匹配的字段名
         MatchContent：匹配内容
         MatchCode   ：匹配方式代码
-    缓存对象CacheItem（命中后存储的Flag对应的数据）：
-    Threhold    ：  门槛消耗剩余，来自触发这条规则的FlagThrehold字段。
-                    Flag生成之后每次命中Threhold消耗1，直到Threhold变为0时这个Flag才能正式生效。
-                    Flag判定时应判断Threhold是否为0，Threhold为0的Flag才是生效的Flag，否则将Flag的Threhold减1，并返回Flag未命中
-    Lifetime    ：  生存期剩余，来自触发这条规则的FlagLifetime字段。
-                    Flag生效之后（Threhold消耗完）每次命中Lifetime消耗1。
-                    当最后一次命中之后Lifetime减0时这个Flag将被销毁。
-                    Lifetime如果初始就是0，则为永久有效，跳过Lifetime判定和消耗流程。
-    ExtraData   ：  附加数据，可存储业务需要的任何数据。
-    FlagContent ：  对应Flag的内容
     '''
 
 
@@ -63,7 +53,7 @@ class AnalyseBase(object):
         # 综上，对于所有比较运算，翻转比较都不具备实际意义或者可用已有方式代替，因此不将其加入功能
         
     class PluginBase(object):
-        '插件基类'
+        '分析插件基类'
         # 原插件功能设计逻辑：在派生类里作为规则命中之后执行的业务函数插入分析逻辑最后一步。
         # 原插件用户函数传入数据项：已通过字段匹配以及Flag匹配的单条数据，命中的规则
         # 原插件用户函数返回值：数据是否满足插件分析逻辑/Boolean
@@ -73,9 +63,10 @@ class AnalyseBase(object):
         _AnalyseBase = None # 插件实例化时需要分析算法对象实例
 
         def __init__(self, AnalyseBaseObj):
-            if not (type(AnalyseBaseObj) == AnalyseBase or type(AnalyseBaseObj).__base__ == AnalyseBase):
+            if not AnalyseBaseObj or AnalyseBase not in {type(AnalyseBaseObj), type(AnalyseBaseObj).__base__}:
                 raise TypeError("Invaild AnalyseBaseObj Type, expecting AnalyseBase.")
-            self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
+            else:
+                self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
 
         def _DefaultAnalyseSingleData(self, InputData, InputRule):
             return self._AnalyseBase._DefaultSingleRuleTest(InputData, InputRule)
@@ -93,12 +84,12 @@ class AnalyseBase(object):
 
             # 特别注明，如果需要调用原分析逻辑里的单规则分析函数，
             # 必须是_DefaultSingleRuleTest()，而非SingleRuleTest()
-            # 否则由于SingleRuleTest()里也会调用插件的AnalyseSinlgeData()函数，会形成无限递归
+            # 否则由于SingleRuleTest()里也会调用插件的AnalyseSingleData()函数，会形成无限递归
 
             # 当前版本的分析插件用户函数仅作为分析逻辑里SingleRuleTest()函数的代用品
             # 如果需要实现之前后置型分析插件用户函数，请在派生类里实现
 
-            # 该方法不做抽象方法，如果插件无需实现这部分分析逻辑，可不重写AnalyseSinlgeData()函数，默认执行原分析逻辑的单规则匹配函数
+            # 该方法不做抽象方法，如果插件无需实现这部分分析逻辑，可不重写AnalyseSingleData()函数，默认执行原分析逻辑的单规则匹配函数
             return self._DefaultAnalyseSingleData(InputData, InputRule)
 
         @property
@@ -111,81 +102,7 @@ class AnalyseBase(object):
             '插件独有的扩展规则字段，应返回一个dict()，其中key是字段名称，value是说明文字。无扩展字段可返回None'
             return self._ExtraRuleFields
 
-    class CacheItem(object):
-        '算法缓存对象'
-
-        _Threhold = 0  # 门槛剩余
-        _LifeTime = 0  # 生存期剩余
-        _FlagContent = ''  # Flag内容
-        _ExtraData = None  # 附加数据
-        _Valid = True  # 指示当前Flag是否应还有效，当生存期消耗完毕或者超过有效时间时为False，其他情况包括门槛未消耗完毕时仍然为True。
-        # 检查缓存对象是否可用应使用Check()函数，而不是直接使用_Valid属性
-
-        @property
-        def ExtraData(self):
-            return self._ExtraData
-
-        @property
-        def ThreholdRemain(self):
-            return self._Threhold
-
-        @property
-        def LifetimeRemain(self):
-            return self._LifeTime
-
-        @property
-        def FlagContent(self):
-            return self._FlagContent
-
-        @property
-        def Valid(self):
-            return self._Valid
-
-        def __init__(self, FlagContent, Threhold, LifeTime, ExtraData):
-            self._Threhold = Threhold
-            self._LifeTime = LifeTime
-            self._FlagContent = FlagContent
-            self._ExtraData = ExtraData
-
-        def _ConsumeThrehold(self):
-            '消耗门槛操作，如果门槛已经消耗完毕，返回True。在门槛消耗完毕之前，Valid属性仍然是True'
-            if self._Valid == False:
-                return False
-
-            if self._Threhold <= 0:
-                return True
-            else:
-                self._Threhold -= 1
-                return False
-
-        def _ConsumeLifetime(self):
-            '消耗生存期操作。如果还在生存期内或者生存期无限（值为0）返回True，否则返回False并将Valid属性设为False'
-            # Lifetime由1变成0的时候才会使得_Valid变为False，初始就是0时表示无限
-            if self._Valid == False:
-                return False
-
-            if self._LifeTime == 0:
-                return True
-            else:
-                self._LifeTime -= 1
-                # 生存期失效之前最后一次调用，返回True并将_Valid设为False
-                self._Valid = not (self._LifeTime == 0)
-                return True
-
-        def Check(self):
-            return self._DefaultCheck()
-
-        def _DefaultCheck(self):  # 检查是否有效
-            if not self._Valid:
-                return False
-            else:
-                if self._ConsumeThrehold():
-                    return self._ConsumeLifetime()
-                else:
-                    return False
-
-    _cache = dict() # Flag-缓存对象字典
-    _timer = dict() # Flag-计时器对象字典
+    _flags = dict() # Flag-缓存对象字典
     _plugins = dict() # 插件名-插件对象实例字典
 
     PluginDir = os.path.abspath(os.path.dirname(__file__)) + '/plugins/' # 插件存放路径
@@ -220,33 +137,11 @@ class AnalyseBase(object):
             print("{0} plugin(s) loaded.".format(len(self._plugins)))
 
 
-    def __RemoveFlag(self, InputFlag):
-        '尝试移除指定的Flag，包括缓存和计时器'
-        if InputFlag in self._cache:
-            self._cache.pop(InputFlag)
-        if InputFlag in self._timer:
-            self._timer.pop(InputFlag)
+    def RemoveFlag(self, InputFlag):
+        '尝试移除指定的Flag'
+        if InputFlag in self._flags:
+            self._flags.pop(InputFlag)
 
-    def _DefaultFlagPeek(self, InputFlag):
-        '默认Flag偷窥函数，检查Flag是否有效。返回定义和默认Flag检查函数相同，但并不会触发Threhold或Lifetime消耗，也不进行缓存管理。对于Threhold不为0的Flag也返回缓存对象'
-        rtn = False
-        hitItem = self._cache.get(InputFlag, None)
-        if hitItem:
-            rtn = hitItem.Valid
-        return rtn, hitItem
-
-    def _DefaultFlagCheck(self, InputFlag):
-        '默认Flag检查函数，检查Flag是否有效。返回一个Tuple，包括该Flag是否有效(Bool)，以及该Flag命中的缓存对象。如无命中返回(False, None)。检查将完成Flag管理功能'
-        rtn, hitItem = self._DefaultFlagPeek(InputFlag)
-        if not rtn:
-            return False, None
-        else:
-            rtn = hitItem.Check()
-            if not hitItem.Valid:  # 删除过期/无效的Flag（CacheItem）
-                self._cache.pop(InputFlag)
-            hitItem = None if not rtn else hitItem
-            return rtn, hitItem
-    
     @staticmethod
     def _DefaultFieldCheck(TargetData, InputFieldCheckRule):
         '默认的字段检查函数，输入字段的内容以及单条字段检查规则，返回True/False'
@@ -306,7 +201,7 @@ class AnalyseBase(object):
                 pass
         else:
             pass
-        fieldCheckResult = (matchCode < 0 ^ fieldCheckResult) # 负数代码，结果取反
+        fieldCheckResult = ((matchCode < 0) ^ fieldCheckResult) # 负数代码，结果取反
         return fieldCheckResult
 
     @staticmethod
@@ -334,27 +229,32 @@ class AnalyseBase(object):
         return rtn
 
     def _DefaultSingleRuleTest(self, InputData, InputRule):
-        '用数据匹配单条规则，如果数据匹配当前则，返回(True, 命中的缓存对象)，否则返回(False, None)'
+        '用数据匹配单条规则，如果数据匹配当前则，返回Flag命中的应用层数据对象'
         # Single rule test function. Returns a tuple like (True, HitCacheItem) if the the data hit the rule,
         # or (False, None) if the data hits nothing.
+        # 20201222 修改
+        # Before：返回(命中与否，命中的CacheItem)
+        # After：返回命中的用户数据项（原CacheItem.ExtraItem）
         if type(InputData) != dict or type(InputRule) != dict:
             raise TypeError("Invalid InputData or InputRule type, expecting dict")
 
         fieldCheckResult = False
-        if type(InputRule["FieldCheckList"]) in (dict, list):
-            fieldCheckResults = map(
-                lambda y:AnalyseBase.FieldCheck(InputData[y['FieldName']], y),
-                filter(
-                    lambda x:x.get('FieldName') in InputData,
-                    InputRule["FieldCheckList"]
+        if type(InputRule["FieldCheckList"]) in (dict, list) and bool(InputRule["FieldCheckList"]):
+            fieldCheckResults = list(
+                map(
+                    lambda y:AnalyseBase.FieldCheck(InputData[y['FieldName']], y),
+                    filter(
+                        lambda x:x.get('FieldName') in InputData,
+                        InputRule["FieldCheckList"]
+                    )
                 )
             )
             if abs(InputRule["Operator"]) == AnalyseBase.OperatorCode.OpOr:
                 fieldCheckResult = any(fieldCheckResults)
             elif abs(InputRule["Operator"]) == AnalyseBase.OperatorCode.OpAnd:
                 fieldCheckResult = all(fieldCheckResults)
-
-            fieldCheckResult = (InputRule["Operator"] < 0 ^ fieldCheckResult) # 负数匹配代码结果取反
+            # 负数匹配代码结果取反，而且如果字段匹配结果列表为空，说明字段匹配规则全部失配，这条规则就不是给这个数据的
+            fieldCheckResult = bool(fieldCheckResults) and ((InputRule["Operator"] < 0) ^ fieldCheckResult) 
         else:
             # 字段匹配列表为空，直接判定字段匹配通过
             # Field check is None, ignore it.
@@ -366,29 +266,32 @@ class AnalyseBase(object):
         if bool(InputRule["PrevFlag"]):  # 判断前序flag是否为空
             # 检查Flag缓存，如果成功，返回一个包含两个元素的Tuple，分别是命中结果（True/False）和命中的CacheItem对象
             # Prevflag check succeed, return (True, Hit CacheItem)
-            return self.FlagCheck(self.FlagGenerator(InputData, InputRule["PrevFlag"]))
+
+            # 20201218修改本函数返回值定义
+            # Before：返回CacheItem
+            # After：返回业务层定义数据（原CacheItem.ExtraData）
+            currentFlag = self.FlagGenerator(InputData, InputRule["PrevFlag"])
+            rtn, hitItem = currentFlag in self._flags, self._flags.get(currentFlag)
+            return rtn, hitItem
         else:
             # 前序flag为空，入口点规则，Flag匹配过程直接命中，命中的CacheItem对象为None
             # Prevflag is '' or None, it means this is a init rule. Return (True, None)
             return (True, None)
 
     def _DefaultClearCache(self):
-        '默认的清除缓存函数，将_cache和_timer两个字典清空'
-        self._cache.clear()
-        self._timer.clear()
+        '默认的清除缓存函数，将_flags字典清空'
+        self._flags.clear()
 
     @staticmethod
     def FieldCheck(TargetData, InputFieldCheckRule):
         '字段检查函数，可根据需要在派生类里重写。'
         return AnalyseBase._DefaultFieldCheck(TargetData, InputFieldCheckRule)
 
-    def FlagCheck(self, InputFlag):
-        'Flag检查函数，可根据需要在派生类里重写。应返回一个二元Tuple，分别是Flag是否有效，以及有效的Flag命中的对象。没有命中返回(False, None)'
-        return self._DefaultFlagCheck(InputFlag)
-
-    def FlagPeek(self, InputFlag):
-        'Flag偷看函数，可根据需要在派生类里重写。返回值定义和FlagCheck相同，但并不会消耗Threhold或Lifetime，也不进行缓存管理'
-        return self._DefaultFlagPeek(InputFlag)
+    # 20201222 修改
+    # 不再基础算法里实现Flag生存期管理，弃用FlagCheck函数，直接操作_flags完成Flag检查
+    # def FlagCheck(self, InputFlag):
+    #     'Flag检查函数，可根据需要在派生类里重写。应返回一个二元Tuple，分别是Flag是否有效，以及有效的Flag命中的对象。没有命中返回(False, None)'
+    #     return self._DefaultFlagCheck(InputFlag)
 
     @staticmethod
     def FlagGenerator(InputData, InputTemplate):
@@ -412,11 +315,12 @@ class AnalyseBase(object):
         # 该方法的应用场景是一个插件调用另一个插件的情况。
         # 如果用无效的插件名调用本函数，会抛出异常。
         # 因此需要由父级插件调用_plugins()属性检查调用的子插件是否存在或者捕获异常
-        PluginObj = self._plugins.get(PluginName, None)
+        PluginObj = self._plugins.get(PluginName)
         if PluginObj:
-            return PluginObj.AnalyseSinlgeData(InputData, InputRule)
+            return PluginObj.AnalyseSingleData(InputData, InputRule)
         else:
-            raise Exception("Plugin '%s' not found." % PluginName)
+            return (False, None)
+            # raise Exception("Plugin '%s' not found." % PluginName)
 
     def ClearCache(self):
         '清除缓存方法，重置缓存状态。可根据需要在派生类里重写'
@@ -427,7 +331,7 @@ class AnalyseBase(object):
     
     def _DummyActionFunc(self, InputData, rule, hitItem, currentFlag):
         import uuid
-        return uuid.uuid1()
+        return str(uuid.uuid1())
 
 
     def _DefaultAnalyseMain(self, InputData, ActionFunc, InputRules):
@@ -456,48 +360,39 @@ class AnalyseBase(object):
         for rule in InputRules:  # 规则遍历主循环
             # 遍历检查单条规则
             # Tests every single rule on input data
-            # 如果规则包含插件，将在单规则检查函数中被调用
+            # 如果规则包含插件调用，将在单规则检查函数SingleRuleTest()中被调用
             ruleCheckResult, hitItem = self.SingleRuleTest(InputData, rule)
+            # 20201218 修改
+            # Before：SingleRuleTest返回CacheItem
+            # After：SingleRuleTest返回ExtraData
+            # CacheItem的功能是对Flag实施声明周期管理，实际上是算法基类的内部数据对象，原则上不应直接提供给业务层
+            # 何况目前本算法唯一的上层应用也没有用到CacheItem的相关功能
+            # 20201222 修改
+            # 将Threshold、Lifetime和Expire功能拆分成单独的插件，基础算法不再实现该功能
+
             if ruleCheckResult:  # 字段匹配和前序Flag匹配均命中（包括前序Flag为空的情况），规则命中
                 # 1、构造本级Flag；   Generate current flag;
                 # 2、调用ActionFunc()获得用户数据，构造CacheItem对象；  Call ActionFunc() to get a user defined data
-                # 3、以本级Flag作为Key，新的CacheItem作为Value，存入self._cache[]； Save cache item into self._cache[], with current flag as key
+                # 3、以本级Flag作为Key，新的CacheItem作为Value，存入self._flags[]； Save cache item into self._flags[], with current flag as key
                 currentFlag = self.FlagGenerator(InputData, rule.get("CurrentFlag"))
                 removeFlag = self.FlagGenerator(InputData, rule.get("RemoveFlag"))
-                self.__RemoveFlag(removeFlag)
+                
+                # 将命中规则的数据、规则本身、命中的缓存对象以及命中的Flag传给用户函数，获得用户函数返回值
                 newDataItem = ActionFunc(InputData, rule, hitItem, currentFlag)
-                if currentFlag and currentFlag not in self._cache:
-                    # 将命中规则的数据、规则本身、命中的缓存对象以及命中的Flag传给用户函数，获得用户函数返回值
+                if currentFlag and currentFlag not in self._flags:
                     # 如果是入口点规则，命中的缓存对象是None，用户函数可据此判断
+                    self.RemoveFlag(removeFlag)
                     # Passing the key data, hit rule itself, hit cache item (None if the data hits a init rule) and flag to ActionFunc()
                     if newDataItem:  # 用户层还可以再做一次判断，如果用户认为已经满足字段匹配和前序FLAG匹配的数据仍不符合分析条件，可返回None，缓存数据将不会被记录
-                        newCacheItem = self.CacheItem(
-                            currentFlag,
-                            rule.get("FlagThrehold", 0),
-                            rule.get("FlagLifetime", 0),
-                            newDataItem
-                        )
-                        # If the input data hits a certain rule and successfully generated a new CacheItem obj, the obj will be in the return.
-                        self._cache[currentFlag] = newCacheItem
-                        rtn.add(newCacheItem)
-                        
-                        Expire = rule.get('Expire', 0)
-                        if type(Expire) in {int, float} and Expire > 0:
-                        # 如果到期时间大于0，则为有效值，为FLAG设置有效期，并且即刻生效。
-                            timer = threading.Timer(Expire, self.__RemoveFlag, {currentFlag})
-                            self._timer[currentFlag] = timer
-                            timer.start()
-                            # 如果需要条件延迟启动定时器（比如threhold消耗完之后再启动），可设置两级串联规则。
-                            # 第一级是延迟条件（比如设置threhold）；第二级规则无条件，带定时器。之间用flag关联
+                        # 20201222修改
+                        # 返回值由CacheItem改为业务层ActionFunc()函数的返回值
+                        # 原Flag的Threshold和Lifetime功能拆分成插件实现
+                        self._flags[currentFlag] = newDataItem
+                        rtn.add(newDataItem)
+                        # 20201222修改
+                        # Expire和Delay功能单独拆分成插件
                 else:
-                    # Flag冲突时，检查FLAG是否对应一个定时器，命中规则是否带有超时规则。如果都具备，用当前规则的超时重置这个计数器
-                    # if the new flag conflicts with a existed and timing flag, check and reset the flag's timer with the Expire given in the rule.
-                    hitTimer = self._timer.get(currentFlag, None)
-                    Expire = rule.get('Expire', 0)
-                    if hitTimer and hitTimer.isAlive() and type(Expire) in {int, float} and Expire > 0:
-                        hitTimer.cancel()
-                        resetTimer = threading.Timer(Expire, self.__RemoveFlag, [currentFlag])
-                        self._timer[currentFlag] = resetTimer
-                        resetTimer.start()
+                    # Flag冲突
+                    # 忽略
                     pass
         return rtn
