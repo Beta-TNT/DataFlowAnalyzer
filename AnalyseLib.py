@@ -1,6 +1,7 @@
 '时序分析算法基础模块,实现最基础的业务无关的时序分析逻辑'
 
 __author__ = 'Beta-TNT'
+__version__= '2.6.0'
 
 import re, os, base64
 from enum import IntEnum
@@ -137,8 +138,7 @@ class AnalyseBase(object):
 
     def RemoveFlag(self, InputFlag):
         '尝试移除指定的Flag'
-        if InputFlag in self._flags:
-            self._flags.pop(InputFlag)
+        self._flags.pop(InputFlag, None)
 
     @staticmethod
     def _DefaultFieldCheck(TargetData, InputFieldCheckRule):
@@ -155,8 +155,7 @@ class AnalyseBase(object):
             try:
                 if type(TargetData) in {bytes, bytearray}:
                     # 如果原数据类型是二进制，则试着将比较内容字符串按BASE64转换成bytes后再进行比较
-                    matchContent = base64.b64decode(matchContent)   
-                
+                    matchContent = base64.b64decode(matchContent)
                 if type(matchContent) == type(TargetData):  # 同数据类型，直接判断
                     fieldCheckResult = (matchContent == TargetData)
                 else:  # 不同数据类型，都转换成字符串判断
@@ -172,7 +171,7 @@ class AnalyseBase(object):
                 else:
                     matchContent = str(matchContent) if type(matchContent) != str else matchContent
                     TargetData = str(TargetData) if type(TargetData) != str else TargetData
-                fieldCheckResult = (TargetData in matchContent)
+                fieldCheckResult = (matchContent in TargetData)
             except:
                 pass
         elif abs(matchCode) == AnalyseBase.MatchMode.RegexMatching:
@@ -193,7 +192,7 @@ class AnalyseBase(object):
                     pass
         elif abs(matchCode) == AnalyseBase.MatchMode.LengthEqual:
             # 元数据比较：数据长度相等。忽略无法比较长度的数字类型
-            if type(matchContent) not in (int, float):
+            if type(matchContent) not in (int, float, bool, complex):
                 try:
                     fieldCheckResult = (len(matchContent) == int(TargetData))
                 except:
@@ -202,7 +201,7 @@ class AnalyseBase(object):
                 pass
         elif abs(matchCode) == AnalyseBase.MatchMode.LengthGreaterThan:
             # 元数据比较：数据长度大于。忽略无法比较长度的数字类型
-            if type(matchContent) not in (int, float):
+            if type(matchContent) not in (int, float, bool, complex):
                 try:
                     fieldCheckResult = (len(matchContent) > int(TargetData))
                 except:
@@ -317,7 +316,7 @@ class AnalyseBase(object):
         # 已实现多插件调用支持，PluginNames字段代替原PluginName字段，需要调用的多个插件名称按调用顺序以分号;分隔
         # 如果只需要调用一个插件，可以只写一个插件名，功能和原版本相同
         pluginNameList = list(filter(None, map(lambda str:str.strip(), InputRule.get('PluginNames','').split(';'))))
-        if all(pluginNameList):
+        if pluginNameList:
             pluginResults = set()
             i = 0
             while True:
