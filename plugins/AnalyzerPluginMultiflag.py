@@ -16,11 +16,11 @@ class AnalysePlugin(AnalyseBase.PluginBase):
             '多个前序Flag命中逻辑关系。定义沿用字段逻辑匹配的OperatorCode',
             int,
             lambda x:x in (-2, -1, 1, 2),
-            'Invaild MultiFlagOperator Code: %s, see OperatorCode defination for field check rule.'
+            'invalid MultiFlagOperator Code: %s, see OperatorCode defination for field check rule.'
         )
     }
     _PluginFilePath = os.path.abspath(__file__)
-    _CurrentPluginName = os.path.basename(_PluginFilePath).split('.')[:-1][0]
+    _CurrentPluginName = os.path.splitext(os.path.basename(_PluginFilePath))[0]
 
     def LoadSetting(self):
         pass

@@ -104,7 +104,7 @@ class AnalysePlugin(AnalyseLib.AnalyseBase.PluginBase):
     }
 
     _PluginFilePath = os.path.abspath(__file__)
-    _CurrentPluginName = os.path.basename(_PluginFilePath).split('.')[:-1][0]
+    _CurrentPluginName = os.path.splitext(os.path.basename(_PluginFilePath))[0]
 
     # 原分析算法基类中的Flag生命周期管理缓存对象，现拆分成单独的插件实现Threshold和Lifetime功能
     _cache = dict() # Flag-CacheItem映射
@@ -162,12 +162,13 @@ class AnalysePlugin(AnalyseLib.AnalyseBase.PluginBase):
             if InputRule.get("Threshold", 0) or InputRule.get("Lifetime", 0):
                 # Threshold和Lifetime至少有一个不为0才进行Flag映射和管理
                 currentFlag = self._AnalyseBase.FlagGenerator(InputData, InputRule.get('CurrentFlag'))
-                newCacheItem = self.CacheItem(
-                    currentFlag,
-                    InputRule.get("Threshold", 0),
-                    InputRule.get("Lifetime", 0),
-                )
-                self._cache[currentFlag] = newCacheItem
+                if currentFlag not in self._cache: # 判断生成的currentFlag是否已经存在
+                    newCacheItem = self.CacheItem( # 防止覆盖
+                        currentFlag,
+                        InputRule.get("Threshold", 0),
+                        InputRule.get("Lifetime", 0),
+                    )
+                    self._cache[currentFlag] = newCacheItem
             return True, hitItem
         else:
             return False, None
