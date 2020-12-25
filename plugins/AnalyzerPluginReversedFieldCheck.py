@@ -1,4 +1,4 @@
-import sys, os, re
+import sys, os, re, base64
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from AnalyseLib import AnalyseBase
 
@@ -35,17 +35,25 @@ class AnalysePlugin(AnalyseBase.PluginBase):
             pass
         elif abs(matchCode) == AnalyseBase.MatchMode.Equal:
             # 相等匹配 equal test
+            if type(TargetData) in {bytes, bytearray}:
+                # 如果原数据类型是二进制，则试着将比较内容字符串按BASE64转换成bytes后再进行比较
+                matchContent = base64.b64decode(matchContent)
             if type(matchContent) == type(TargetData):  # 同数据类型，直接判断
                 fieldCheckResult = (matchContent == TargetData)
             else:  # 不同数据类型，都转换成字符串判断
                 fieldCheckResult = (str(matchContent) == str(TargetData))
         elif abs(matchCode) == AnalyseBase.MatchMode.TextMatching:
             # 文本匹配（字符串） text matching (ignore case)
-            if type(matchContent) != str:
-                matchContent = str(matchContent)
-            if type(TargetData) != str:
-                TargetData = str(TargetData)
-            fieldCheckResult = (matchContent in TargetData)
+            try:
+                if type(TargetData) in {bytes, bytearray}:
+                    # 如果原数据类型是二进制，则试着将比较内容字符串按BASE64转换成bytes后再进行比较
+                    matchContent = base64.b64decode(matchContent)
+                else:
+                    matchContent = str(matchContent) if type(matchContent) != str else matchContent
+                    TargetData = str(TargetData) if type(TargetData) != str else TargetData
+                fieldCheckResult = (TargetData in matchContent)
+            except:
+                pass
         elif abs(matchCode) == AnalyseBase.MatchMode.RegexMatching:
             # 正则匹配（字符串） regex match
             if type(matchContent) != str:
