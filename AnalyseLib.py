@@ -2,8 +2,7 @@
 
 __author__ = 'Beta-TNT'
 
-import re, os
-import threading
+import re, os, base64
 from enum import IntEnum
 from abc import ABCMeta, abstractmethod
 
@@ -15,17 +14,14 @@ class AnalyseBase(object):
     PrevFlag    ：时序分析算法历史匹配Flag构造模板，为空则是入口点规则
     RemoveFlag  ：字段匹配规则和历史匹配Flag命中之后，需要删除的Flag。Flag不存在不会触发异常
     CurrentFlag ：时序分析算法本级规则命中后构造Flag的模板
-    FlagThreshold：本级规则构造的Flag触发门槛。相同的Flag每次命中消耗1，消耗到0才能真正触发；默认0则不存在门槛，直接触发
-    FlagLifetime：本级规则构造的Flag生存期。Flag被真正触发之后，相同的Flag再次触发会消耗1，消耗到0后Flag删除
-    Expire      ：当前规则触发生成的Flag的生存时间，单位是秒，浮点数。如该项不存或0，则表示生存时间为无限
-    PluginName  ：需要调用的插件名
+    PluginNames ：需要调用的插件名列表，请将插件名列表以分号分隔写入这个字段，引擎将按列表顺序以串行执行运行插件函数。原PluginName字段废除
     FieldCheckList[]    ：字段匹配项列表
         字段匹配项结构（字典）：
         FieldName   ：要进行匹配的字段名
         MatchContent：匹配内容
         MatchCode   ：匹配方式代码
     '''
-
+    # Lifetime, Threshold和Expire功能拆分成单独的插件，基础算法中不再实现
 
     class OperatorCode(IntEnum):
         Preserve = 0 # 预留
@@ -51,6 +47,7 @@ class AnalyseBase(object):
         # 4、翻转比较用于数字大于比较的时候，和小于等于运算等价，可以用-4代替；
         # 5、翻转比较无法用于元数据比较
         # 综上，对于所有比较运算，翻转比较都不具备实际意义或者可用已有方式代替，因此不将其加入功能
+        # 翻转比较已通过插件实现，如有必要可通过插件调用
         
     class PluginBase(object):
         '分析插件基类'
@@ -64,7 +61,7 @@ class AnalyseBase(object):
 
         def __init__(self, AnalyseBaseObj):
             if not AnalyseBaseObj or AnalyseBase not in {type(AnalyseBaseObj), type(AnalyseBaseObj).__base__}:
-                raise TypeError("Invaild AnalyseBaseObj Type, expecting AnalyseBase.")
+                raise TypeError("invalid AnalyseBaseObj Type, expecting AnalyseBase.")
             else:
                 self._AnalyseBase = AnalyseBaseObj # 构造函数需要传入分析算法对象实例
 
@@ -104,6 +101,7 @@ class AnalyseBase(object):
 
     _flags = dict() # Flag-缓存对象字典
     _plugins = dict() # 插件名-插件对象实例字典
+    _pluginExtraRuleFields = dict() # 插件专属规则字段名-插件对象字典，暂无实际应用
 
     PluginDir = os.path.abspath(os.path.dirname(__file__)) + '/plugins/' # 插件存放路径
 
@@ -154,17 +152,29 @@ class AnalyseBase(object):
             pass
         elif abs(matchCode) == AnalyseBase.MatchMode.Equal:
             # 相等匹配 equal test
-            if type(matchContent) == type(TargetData):  # 同数据类型，直接判断
-                fieldCheckResult = (matchContent == TargetData)
-            else:  # 不同数据类型，都转换成字符串判断
-                fieldCheckResult = (str(matchContent) == str(TargetData))
+            try:
+                if type(TargetData) in {bytes, bytearray}:
+                    # 如果原数据类型是二进制，则试着将比较内容字符串按BASE64转换成bytes后再进行比较
+                    matchContent = base64.b64decode(matchContent)   
+                
+                if type(matchContent) == type(TargetData):  # 同数据类型，直接判断
+                    fieldCheckResult = (matchContent == TargetData)
+                else:  # 不同数据类型，都转换成字符串判断
+                    fieldCheckResult = (str(matchContent) == str(TargetData))
+            except:
+                pass
         elif abs(matchCode) == AnalyseBase.MatchMode.TextMatching:
             # 文本匹配（字符串） text matching (ignore case)
-            if type(matchContent) != str:
-                matchContent = str(matchContent)
-            if type(TargetData) != str:
-                TargetData = str(TargetData)
-            fieldCheckResult = (TargetData in matchContent)
+            try:
+                if type(TargetData) in {bytes, bytearray}:
+                    # 如果原数据类型是二进制，则试着将比较内容字符串按BASE64转换成bytes后再进行比较
+                    matchContent = base64.b64decode(matchContent)
+                else:
+                    matchContent = str(matchContent) if type(matchContent) != str else matchContent
+                    TargetData = str(TargetData) if type(TargetData) != str else TargetData
+                fieldCheckResult = (TargetData in matchContent)
+            except:
+                pass
         elif abs(matchCode) == AnalyseBase.MatchMode.RegexMatching:
             # 正则匹配（字符串） regex match
             if type(matchContent) != str:
@@ -302,11 +312,31 @@ class AnalyseBase(object):
     def SingleRuleTest(self, InputData, InputRule):
         '单规则匹配函数，可根据需要在派生类里重写。本函数也是分析插件的入口位置'
         'Single rule test func, you may overwrite it in child class if necessary.'
-        # 插件入口做在这里。如果规则包含一个有效的插件名，则执行插件分析逻辑，否则执行默认分析逻辑
+        # 插件入口做在这里。如果规则包含有效的插件名，则执行插件分析逻辑，否则执行默认分析逻辑
         # 因此，如果需要在插件功能执行的同时还需要默认分析逻辑，请在插件代码中调用
-        PluginObj = self._plugins.get(InputRule.get('PluginName'))
-        if PluginObj:
-            return PluginObj.AnalyseSingleData(InputData, InputRule)
+        # 已实现多插件调用支持，PluginNames字段代替原PluginName字段，需要调用的多个插件名称按调用顺序以分号;分隔
+        # 如果只需要调用一个插件，可以只写一个插件名，功能和原版本相同
+        pluginNameList = list(filter(None, map(lambda str:str.strip(), InputRule.get('PluginNames','').split(';'))))
+        if all(pluginNameList):
+            pluginResults = set()
+            i = 0
+            while True:
+                if i>= len(pluginNameList):
+                    break
+                pluginObj = self._plugins.get(pluginNameList[i])
+                if pluginObj:
+                    pluginResult = pluginObj.AnalyseSingleData(InputData, InputRule)
+                    pluginResults.add(pluginResult)
+                    if not pluginResult[0]:
+                        # 按列表次序执行插件程序，并且在第一个返回失配结果的配件结束轮询
+                        # 串行方式用于让一条规则以插件列表顺序，按AND逻辑应用多个插件功能，
+                        # 比如将生存时间插件和限定命中次数插件结合起来
+                        # 实现如“一秒内收到同来源IP地址连接多少次数即触发”这样的复合条件规则
+                        # 也可以实现通过编码转换插件对数据进行预处理
+                        break
+                i+= 1
+            # 如果所有插件都返回了相同的返回值，即将该返回值作为最终的返回值，否则返回False, None
+            return (False, None) if len(pluginResults) != 1 else pluginResults.pop()
         else:
             return self._DefaultSingleRuleTest(InputData, InputRule)
 
@@ -338,13 +368,14 @@ class AnalyseBase(object):
         '''默认的分析算法主函数。根据已经加载的规则和输入数据。
         基础分析算法判断是否匹配分为字段匹配和Flag匹配两部分，只有都匹配成功才算该条数据匹配成功。
         ActionFunc传入一个函数，该函数需要接收命中规则的数据inputData（dict）、对应命中的规则rule（dict）、命中的缓存对象hitItem(Obj)，生成的CurrentFlag（obj）作为参数,
-        如果输入数据匹配成功，数据调用传入的ActionFunction()作为输出接口。每成功匹配一条规则，传入的ActionFunc()将被执行一次
-        返回值是set()类型，包含了该条数据命中的所有CacheItem。如果没有命中返回长度为0的空集合（不是None）
+        如果输入数据匹配成功，数据调用传入的ActionFunction()作为输出接口，并返回一个用户自定义数据对象。
+        每成功匹配一条规则，传入的ActionFunc()将被执行一次
+        返回值是set()类型，包含了该条数据命中的所有用户自定义数据对象。如果没有命中返回长度为0的空集合（不是None）
         由于提供了单条规则匹配的方法，用户也可参考本函数自行实现分析函数
 
         Main function. Analyzing key-value based data (dict) with given rule set.
-        Each time the input data hits a rule, ActionFunc() will be called once, use this as an output interface.
-        Return a set() which includes all the CacheItem that input data hits, return an empty set() if input data hits nothing (not None).
+        Each time the input data hits a rule, ActionFunc() will be called once and return a user-defined data object, use this as an output interface.
+        Return a set() which includes all the user-defined data object that input data hits, return an empty set if input data hits nothing (not None).
         '''
         if InputRules == None:
             return None
